@@ -8,8 +8,6 @@ using NzbDrone.Core.Auth.Bandcamp;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Download.Clients.Bandcamp;
 using NzbDrone.Core.Indexers.Bandcamp;
-using NzbDrone.Core.MetadataSource;
-using NzbDrone.Core.Music;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
 using NzbDrone.Core.ThingiProvider;
@@ -18,13 +16,14 @@ namespace NzbDrone.Core.ImportLists.Bandcamp
 {
     /// <summary>
     /// Import List that emits album-level items from the authenticated Bandcamp fan collection.
-    /// Resolves MusicBrainz IDs inside Fetch (per-item try/catch) so a SkyHook 500 cannot abort
-    /// the host ImportListSync loop the way raw title-only items can.
+    /// Resolves MusicBrainz IDs inside Fetch via direct SkyHook HTTP (not <c>ISearchForNewAlbum</c>)
+    /// so DryIoc cannot cycle through SkyHookProxy → MetadataProfileService → ImportListFactory,
+    /// and so a per-album SkyHook 500 cannot abort the host ImportListSync loop.
     /// </summary>
     public class BandcampImportList : ImportListBase<BandcampImportListSettings>
     {
         private readonly BandcampApiClient _apiClient;
-        private readonly ISearchForNewAlbum _albumSearch;
+        private readonly IBandcampMetadataAlbumSearch _albumSearch;
 
         public override string Name => "Bandcamp";
 
@@ -57,7 +56,7 @@ namespace NzbDrone.Core.ImportLists.Bandcamp
         }
 
         public BandcampImportList(BandcampApiClient apiClient,
-                                  ISearchForNewAlbum albumSearch,
+                                  IBandcampMetadataAlbumSearch albumSearch,
                                   IImportListStatusService importListStatusService,
                                   IConfigService configService,
                                   IParsingService parsingService,
@@ -226,33 +225,26 @@ namespace NzbDrone.Core.ImportLists.Bandcamp
 
             try
             {
-                var matches = _albumSearch.SearchForNewAlbum(album, artist);
-                var mapped = matches?.FirstOrDefault();
-                if (mapped == null || mapped.ForeignAlbumId.IsNullOrWhiteSpace())
+                var metadataBase = _configService.MetadataSource.IsNotNullOrWhiteSpace()
+                    ? _configService.MetadataSource.Trim().TrimEnd('/')
+                    : null;
+
+                var mapped = _albumSearch.FindAlbum(album, artist, metadataBase);
+                if (mapped == null ||
+                    mapped.AlbumMusicBrainzId.IsNullOrWhiteSpace() ||
+                    mapped.ArtistMusicBrainzId.IsNullOrWhiteSpace())
                 {
                     failureKind = ResolveFailureKind.NoMatch;
                     _logger.Debug("Bandcamp import list: no MusicBrainz match for {0} — {1}", artist, album);
                     return null;
                 }
 
-                var artistMbId = GetArtistMusicBrainzId(mapped);
-                if (artistMbId.IsNullOrWhiteSpace())
-                {
-                    failureKind = ResolveFailureKind.NoMatch;
-                    _logger.Debug(
-                        "Bandcamp import list: MusicBrainz album {0} missing artist id for {1} — {2}",
-                        mapped.ForeignAlbumId,
-                        artist,
-                        album);
-                    return null;
-                }
-
                 return new ImportListItemInfo
                 {
-                    Artist = mapped.Artist?.Value?.Name ?? mapped.ArtistMetadata?.Value?.Name ?? artist,
-                    Album = mapped.Title ?? album,
-                    ArtistMusicBrainzId = artistMbId,
-                    AlbumMusicBrainzId = mapped.ForeignAlbumId,
+                    Artist = mapped.ArtistName.IsNullOrWhiteSpace() ? artist : mapped.ArtistName,
+                    Album = mapped.AlbumTitle.IsNullOrWhiteSpace() ? album : mapped.AlbumTitle,
+                    ArtistMusicBrainzId = mapped.ArtistMusicBrainzId,
+                    AlbumMusicBrainzId = mapped.AlbumMusicBrainzId,
                     ReleaseDate = mapped.ReleaseDate ?? DateTime.UtcNow
                 };
             }
@@ -266,17 +258,6 @@ namespace NzbDrone.Core.ImportLists.Bandcamp
                     album);
                 return null;
             }
-        }
-
-        private static string? GetArtistMusicBrainzId(Album mapped)
-        {
-            var fromArtist = mapped.Artist?.Value?.Metadata?.Value?.ForeignArtistId;
-            if (!fromArtist.IsNullOrWhiteSpace())
-            {
-                return fromArtist;
-            }
-
-            return mapped.ArtistMetadata?.Value?.ForeignArtistId;
         }
 
         private static bool IsTrackOnly(BandcampCollectionItem item)
