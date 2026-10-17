@@ -1,6 +1,6 @@
 # Public GitHub mirror (Lidarr installer)
 
-Lidarr’s **System → Plugins** installer only accepts **public GitHub** repository URLs with **Release assets** (plugin DLL zip). Origin alone is not enough. Auto “Source code (zip)” on a Release is **not** a plugin package.
+Lidarr’s **System → Plugins** installer only accepts a **public GitHub** repository URL and downloads a **Release asset** whose name contains `net8.0.zip`. Origin alone is not enough. Auto “Source code (zip)” on a Release is **not** a plugin package.
 
 | | |
 | --- | --- |
@@ -9,78 +9,88 @@ Lidarr’s **System → Plugins** installer only accepts **public GitHub** repos
 | **Direction** | Origin → GitHub only (do not reverse) |
 | **Lidarr install URL** | `https://github.com/cardner/lidarr-bandcamp-plugin` |
 
-## Status
+## What Lidarr needs
 
-- [x] Public repo + `main` + tag `v0.2.0` + Release page + Actions workflow
-- [ ] Release asset must be a **flat** `Lidarr.Plugin.Bandcamp.net8.0.zip` (dll + deps.json + pdb at zip root). Nested / zip-in-zip assets leave a folder on disk but Lidarr never loads the plugin.
-
-## GitHub Action (auto release)
-
-Workflow: [`.github/workflows/build.yml`](../.github/workflows/build.yml)
-
-| Trigger | Behavior |
-| --- | --- |
-| Push `v*` tag | Build, test, create/update GitHub Release, attach `Lidarr.Plugin.Bandcamp.net8.0.zip` |
-| `release` published | Same publish path (useful if Release already exists) |
-| Push/PR to `main` | Build + upload CI artifacts (no Release) |
-
-**After this lands on Origin `main`, push Origin → GitHub** so Actions exist on `cardner/lidarr-bandcamp-plugin`:
-
-```bash
-git fetch origin main && git checkout main && git pull origin main
-git remote add github https://github.com/cardner/lidarr-bandcamp-plugin.git 2>/dev/null || \
-  git remote set-url github https://github.com/cardner/lidarr-bandcamp-plugin.git
-git push github main:main --force   # if histories diverged; Origin is SoT
-# Future tags:
-git tag -a v0.2.1 -m "…" && git push github v0.2.1
-# or: ./scripts/mirror-to-github.sh --tag v0.2.1
-```
-
-## Package shape (critical)
-
-Lidarr installs by extracting the Release zip into `plugins/<github-owner>/<repo>/`, then loads only:
+A GitHub **Release** with asset:
 
 ```text
-plugins/<owner>/<repo>/Lidarr.Plugin.*.dll   # non-recursive GetFiles
+Lidarr.Plugin.Bandcamp.net8.0.zip
 ```
 
-| Good (Slskd-like) | Bad (current broken v0.2.0 asset) |
-| --- | --- |
-| `Lidarr.Plugin.Bandcamp.dll` at zip **root** | DLL under `src/.../bin/Release/net8.0/` |
-| `Lidarr.Plugin.Bandcamp.deps.json` at root | Nested `Lidarr.Plugin.Bandcamp.net8.0.zip` inside the asset |
-| optional `.pdb` | Actions multi-file artifact re-uploaded as Release |
+Zip **root** (flat — no folders, no zip-in-zip):
 
-Symptom of a bad zip: plugin **folder** exists after install/restart, but Indexers/Download Clients show no Bandcamp types; logs:
+| File | Required |
+| --- | --- |
+| `Lidarr.Plugin.Bandcamp.dll` | yes |
+| `Lidarr.Plugin.Bandcamp.deps.json` | yes (`PluginLoadContext`) |
+| `Lidarr.Plugin.Bandcamp.pdb` | recommended |
+
+Lidarr extracts into `plugins/<owner>/<repo>/` and loads only `Lidarr.Plugin.*.dll` via **non-recursive** `GetFiles`. Nested paths or zip-of-zip → folder exists, providers missing:
 
 ```text
 Warn|DownloadClientRepository|Skipping provider of unknown type BandcampDownloadSettings
 ```
 
-(No `PluginService: Found plugin … Bandcamp` load of types — assembly never entered PluginLoadContext.)
+## CI artifact vs Release asset (do not confuse)
 
-**Do not** download the GitHub Actions artifact zip and attach it as the Release asset. Use `./scripts/build-plugin.sh --zip` or the workflow’s single `Lidarr.Plugin.Bandcamp.net8.0.zip` artifact.
+| Source | What you get | Use for Lidarr? |
+| --- | --- | --- |
+| **GitHub Release** asset `Lidarr.Plugin.Bandcamp.net8.0.zip` | Flat plugin zip | **Yes** — System → Plugins URL |
+| **Actions / Origin CI download** | Always an *outer* zip wrapper | **No** as a plugin zip |
 
-## Replace Release asset (laptop)
+GitHub/Origin always wrap artifact downloads. If CI uploaded a `.zip`, the download becomes **zip-of-zip** (e.g. `Lidarr Bandcamp Plugin 8.0.zip` → inner `Lidarr.Plugin.Bandcamp.net8.0.zip`) and Lidarr rejects it.
+
+This repo’s workflow uploads **loose files** (`dll` + `deps.json` + `pdb`) as the CI artifact `Lidarr.Plugin.Bandcamp-files`. After unzipping the CI wrapper once you have files for **manual** copy into `plugins/.../`. For normal install, use the **Release**.
+
+## Create a Release (required for Lidarr)
+
+Workflow: [`.github/workflows/build.yml`](../.github/workflows/build.yml)
+
+| Trigger | Behavior |
+| --- | --- |
+| Push tag `v*` to **GitHub** | Build, test, create/update Release, upload flat `Lidarr.Plugin.Bandcamp.net8.0.zip` |
+| `workflow_dispatch` with `version` (e.g. `0.2.1`) | Same — creates tag + Release on GitHub |
+| `release` published | Re-upload asset onto that Release |
+| Push/PR to `main` | Build + CI file artifact only (**no** Release) |
+
+Pushing Origin `main` alone does **not** create a Release. You must push a tag (or run workflow_dispatch with a version) **on the GitHub remote**.
+
+### Exact steps (Ryan)
 
 ```bash
-# Prefer a new tag after the packaging fix lands:
-./scripts/build-plugin.sh --zip --version 0.2.1
-gh release upload v0.2.1 artifacts/Lidarr.Plugin.Bandcamp.net8.0.zip \
-  --repo cardner/lidarr-bandcamp-plugin --clobber
-# Or clobber v0.2.0:
-# gh release upload v0.2.0 artifacts/Lidarr.Plugin.Bandcamp.net8.0.zip \
-#   --repo cardner/lidarr-bandcamp-plugin --clobber
+# 1) Merge packaging/release PR on Origin, then sync SoT → GitHub
+git fetch origin main && git checkout main && git pull origin main
+git remote add github https://github.com/cardner/lidarr-bandcamp-plugin.git 2>/dev/null || true
+git push github main:main
 
-# Verify flat layout:
-unzip -l artifacts/Lidarr.Plugin.Bandcamp.net8.0.zip
-# must list Lidarr.Plugin.Bandcamp.dll and .deps.json with NO directory prefixes
+# 2) Tag on the commit you want released and push the tag to GitHub
+git tag -a v0.2.1 -m "Flat plugin package for Lidarr"
+git push github v0.2.1
+# or: ./scripts/mirror-to-github.sh --tag v0.2.1
+
+# 3) Wait for Actions on cardner/lidarr-bandcamp-plugin → Release v0.2.1
+# Verify asset name ends with net8.0.zip and unzip -l is flat:
+gh release view v0.2.1 --repo cardner/lidarr-bandcamp-plugin
+gh release download v0.2.1 -p '*.net8.0.zip' --repo cardner/lidarr-bandcamp-plugin
+unzip -l Lidarr.Plugin.Bandcamp.net8.0.zip
 ```
 
-Then in Lidarr Docker (persistent `/config`):
+Optional without local tag: GitHub → Actions → **Build and Release Plugin** → Run workflow → set `version` to `0.2.1`.
 
-1. Delete `plugins/cardner/lidarr-bandcamp-plugin/` (and any `cursor-project/Lidarr.Plugin.Bandcamp` leftover)
-2. System → Plugins → install `https://github.com/cardner/lidarr-bandcamp-plugin`
-3. Restart → Bandcamp should appear under Indexers and Download Clients
+### Lidarr reinstall
+
+1. Delete `plugins/cardner/lidarr-bandcamp-plugin/` (clear nested/broken extract)
+2. System → Plugins → `https://github.com/cardner/lidarr-bandcamp-plugin` → Install
+3. Restart container (persistent `/config` volume)
+
+## Local build / manual upload
+
+```bash
+./scripts/build-plugin.sh --zip --version 0.2.1
+unzip -l artifacts/Lidarr.Plugin.Bandcamp.net8.0.zip   # flat dll + deps.json + pdb
+gh release upload v0.2.1 artifacts/Lidarr.Plugin.Bandcamp.net8.0.zip \
+  --repo cardner/lidarr-bandcamp-plugin --clobber
+```
 
 ## Ongoing sync
 

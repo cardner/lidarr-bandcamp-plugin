@@ -28,7 +28,8 @@ Sync steps: [docs/github-mirror.md](docs/github-mirror.md)
 2. Paste: `https://github.com/cardner/lidarr-bandcamp-plugin`
 3. **Install**, then restart Lidarr when prompted
 
-> Needs a GitHub **Release** with the plugin zip (`v*` tag). Until the first push/tag lands, use the local DLL path below.
+> Needs a GitHub **Release** asset named `Lidarr.Plugin.Bandcamp.net8.0.zip` (flat dll + deps.json).  
+> Push a `v*` tag to the GitHub mirror (or run the workflow with a version) — CI artifact downloads are **not** the Release zip (they wrap files in an outer zip). See [docs/github-mirror.md](docs/github-mirror.md).
 
 ### From a local build
 
