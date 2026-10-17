@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
@@ -337,18 +338,29 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
 
             SetupGetAsync(CreateStringResponse(statResponse));
             var client = CreateClient();
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-stat-{Guid.NewGuid():N}.bin");
 
-            // Act
-            var result = await client.ResolveStatdownloadUrlAsync(
-                "identity=testcookie",
-                "https://bandcamp.com/statdownload/album/12345?sig=abc",
-                "FLAC");
+            try
+            {
+                // Act
+                var result = await client.ResolveStatdownloadUrlAsync(
+                    "identity=testcookie",
+                    "https://bandcamp.com/statdownload/album/12345?sig=abc",
+                    "FLAC",
+                    archivePath);
 
-            // Assert
-            Assert.NotNull(result);
-            Assert.NotNull(result!.DownloadUrl);
-            Assert.Contains("s3.amazonaws.com", result.DownloadUrl);
-            Assert.Contains("album.zip", result.DownloadUrl);
+                // Assert
+                Assert.NotNull(result);
+                Assert.False(result!.StreamedToFile);
+                Assert.NotNull(result.DownloadUrl);
+                Assert.Contains("s3.amazonaws.com", result.DownloadUrl);
+                Assert.Contains("album.zip", result.DownloadUrl);
+                Assert.False(File.Exists(archivePath));
+            }
+            finally
+            {
+                TryDelete(archivePath);
+            }
         }
 
         [Fact]
@@ -359,16 +371,25 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
 
             SetupGetAsync(CreateStringResponse(statResponse));
             var client = CreateClient();
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-stat-{Guid.NewGuid():N}.bin");
 
-            // Act
-            var result = await client.ResolveStatdownloadUrlAsync(
-                "identity=testcookie",
-                "https://bandcamp.com/statdownload/album/12345",
-                "FLAC");
+            try
+            {
+                // Act
+                var result = await client.ResolveStatdownloadUrlAsync(
+                    "identity=testcookie",
+                    "https://bandcamp.com/statdownload/album/12345",
+                    "FLAC",
+                    archivePath);
 
-            // Assert
-            Assert.NotNull(result);
-            Assert.Equal("https://example.com/path/to/file.zip", result!.DownloadUrl);
+                // Assert
+                Assert.NotNull(result);
+                Assert.Equal("https://example.com/path/to/file.zip", result!.DownloadUrl);
+            }
+            finally
+            {
+                TryDelete(archivePath);
+            }
         }
 
         [Fact]
@@ -379,16 +400,25 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
 
             SetupGetAsync(CreateStringResponse(statResponse));
             var client = CreateClient();
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-stat-{Guid.NewGuid():N}.bin");
 
-            // Act
-            var result = await client.ResolveStatdownloadUrlAsync(
-                "identity=testcookie",
-                "https://bandcamp.com/statdownload/album/12345",
-                "FLAC");
+            try
+            {
+                // Act
+                var result = await client.ResolveStatdownloadUrlAsync(
+                    "identity=testcookie",
+                    "https://bandcamp.com/statdownload/album/12345",
+                    "FLAC",
+                    archivePath);
 
-            // Assert
-            Assert.NotNull(result);
-            Assert.Contains("&param=value", result!.DownloadUrl);
+                // Assert
+                Assert.NotNull(result);
+                Assert.Contains("&param=value", result!.DownloadUrl);
+            }
+            finally
+            {
+                TryDelete(archivePath);
+            }
         }
 
         [Fact]
@@ -399,16 +429,25 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
 
             SetupGetAsync(CreateStringResponse(directUrl));
             var client = CreateClient();
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-stat-{Guid.NewGuid():N}.bin");
 
-            // Act
-            var result = await client.ResolveStatdownloadUrlAsync(
-                "identity=testcookie",
-                "https://bandcamp.com/statdownload/album/12345",
-                "FLAC");
+            try
+            {
+                // Act
+                var result = await client.ResolveStatdownloadUrlAsync(
+                    "identity=testcookie",
+                    "https://bandcamp.com/statdownload/album/12345",
+                    "FLAC",
+                    archivePath);
 
-            // Assert
-            Assert.NotNull(result);
-            Assert.Equal(directUrl.Trim(), result!.DownloadUrl);
+                // Assert
+                Assert.NotNull(result);
+                Assert.Equal(directUrl.Trim(), result!.DownloadUrl);
+            }
+            finally
+            {
+                TryDelete(archivePath);
+            }
         }
 
         [Fact]
@@ -417,39 +456,75 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
             // Arrange — garbled response with no URL
             SetupGetAsync(CreateStringResponse("error: not found"));
             var client = CreateClient();
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-stat-{Guid.NewGuid():N}.bin");
 
-            // Act
-            var result = await client.ResolveStatdownloadUrlAsync(
-                "identity=testcookie",
-                "https://bandcamp.com/statdownload/album/12345",
-                "FLAC");
+            try
+            {
+                // Act
+                var result = await client.ResolveStatdownloadUrlAsync(
+                    "identity=testcookie",
+                    "https://bandcamp.com/statdownload/album/12345",
+                    "FLAC",
+                    archivePath);
 
-            // Assert
-            Assert.Null(result);
+                // Assert
+                Assert.Null(result);
+            }
+            finally
+            {
+                TryDelete(archivePath);
+            }
         }
 
         [Fact]
-        public async Task ResolveStatdownloadUrlAsync_BinaryArchiveResponse_ReturnsStatdownloadUrl()
+        public async Task ResolveStatdownloadUrlAsync_BinaryArchiveResponse_StreamsToFile()
         {
-            // Arrange — some Bandcamp statdownload endpoints return archive bytes directly
-            var request = new HttpRequest("https://bandcamp.com/statdownload/album/12345");
+            // Arrange — Bandcamp/popplers may return archive bytes on the first GET
+            // (Ryan Boomtown OOM: ExecuteAsync + .Content buffered the full zip).
+            var request = new HttpRequest("https://popplers5.bandcamp.com/download/album");
             var headers = new HttpHeader { { "Content-Type", "application/zip" } };
-            var response = new HttpResponse(request, headers, new byte[] { 0x50, 0x4B, 0x03, 0x04, 0x00 }, HttpStatusCode.OK);
+            var zipBytes = new byte[] { 0x50, 0x4B, 0x03, 0x04, 0x00, 0x01, 0x02, 0x03 };
+            var response = new HttpResponse(request, headers, zipBytes, HttpStatusCode.OK);
 
             SetupExecuteAsync(response);
             var client = CreateClient();
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-stat-{Guid.NewGuid():N}.zip");
 
-            // Act
-            var result = await client.ResolveStatdownloadUrlAsync(
-                "identity=testcookie",
-                "https://bandcamp.com/statdownload/album/12345?sig=abc",
-                "flac");
+            try
+            {
+                // Act
+                var result = await client.ResolveStatdownloadUrlAsync(
+                    "identity=testcookie",
+                    "https://popplers5.bandcamp.com/download/album?enc=flac&id=1&sig=abc",
+                    "flac",
+                    archivePath);
 
-            // Assert
-            Assert.NotNull(result);
-            Assert.Null(result!.DownloadUrl);
-            Assert.NotNull(result.DirectResponse);
-            Assert.Equal(response, result.DirectResponse);
+                // Assert — streamed on first response; no in-memory DirectResponse
+                Assert.NotNull(result);
+                Assert.Null(result!.DownloadUrl);
+                Assert.True(result.StreamedToFile);
+                Assert.True(File.Exists(archivePath));
+                Assert.Equal(zipBytes, File.ReadAllBytes(archivePath));
+            }
+            finally
+            {
+                TryDelete(archivePath);
+            }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+                // best effort
+            }
         }
 
         #endregion

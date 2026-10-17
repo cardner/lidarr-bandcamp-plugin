@@ -163,6 +163,95 @@ namespace NzbDrone.Core.Http.Bandcamp
             return DownloadToFileViaLidarrHttpAsync(url, cookies, filePath, cancellationToken, progress);
         }
 
+        /// <summary>
+        /// One-shot resolve for Bandcamp statdownload / popplers URLs: stream a binary
+        /// first response to <paramref name="archivePath"/>, or return small JSON/text.
+        /// Must not call <see cref="ExecuteAsync"/> (that path materializes full bodies).
+        /// </summary>
+        public Task<BandcampStatdownloadProbeResult> ProbeOrStreamStatdownloadAsync(
+            string url,
+            string cookies,
+            string archivePath,
+            CancellationToken cancellationToken = default,
+            Action<long, long?>? progress = null)
+        {
+            if (_nativeHttp != null)
+            {
+                return _nativeHttp.ProbeOrStreamStatdownloadAsync(
+                    url, cookies, archivePath, cancellationToken, progress);
+            }
+
+            return ProbeOrStreamStatdownloadViaLidarrHttpAsync(
+                url, cookies, archivePath, cancellationToken, progress);
+        }
+
+        private async Task<BandcampStatdownloadProbeResult> ProbeOrStreamStatdownloadViaLidarrHttpAsync(
+            string url,
+            string cookies,
+            string archivePath,
+            CancellationToken cancellationToken,
+            Action<long, long?>? progress)
+        {
+            // Unit-test seam only — mocks return tiny payloads. Still avoid treating ZIP
+            // bytes as HttpResponse.Content (string decode) to mirror production safety.
+            var builder = CreateRequestBuilder(url, cookies);
+            var request = builder.Build();
+            var response = await _httpClient!.ExecuteAsync(request).ConfigureAwait(false);
+            var data = response.ResponseData;
+            var contentType = response.Headers?.ContentType ?? string.Empty;
+
+            if (data != null && data.Length >= 4 &&
+                data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04)
+            {
+                progress?.Invoke(0, data.Length);
+                await File.WriteAllBytesAsync(archivePath, data, cancellationToken).ConfigureAwait(false);
+                progress?.Invoke(data.Length, data.Length);
+                return new BandcampStatdownloadProbeResult
+                {
+                    StatusCode = (int)response.StatusCode,
+                    StreamedToFile = true,
+                    ContentType = contentType
+                };
+            }
+
+            if (!string.IsNullOrEmpty(contentType) &&
+                (contentType.Contains("application/zip", StringComparison.OrdinalIgnoreCase) ||
+                 contentType.Contains("application/octet-stream", StringComparison.OrdinalIgnoreCase) ||
+                 contentType.Contains("audio/", StringComparison.OrdinalIgnoreCase)) &&
+                data is { Length: > 0 })
+            {
+                progress?.Invoke(0, data.Length);
+                await File.WriteAllBytesAsync(archivePath, data, cancellationToken).ConfigureAwait(false);
+                progress?.Invoke(data.Length, data.Length);
+                return new BandcampStatdownloadProbeResult
+                {
+                    StatusCode = (int)response.StatusCode,
+                    StreamedToFile = true,
+                    ContentType = contentType
+                };
+            }
+
+            // Prefer ResponseData decoded once for small text; avoid relying on .Content
+            // when ResponseData is present (Lidarr may re-decode the full buffer).
+            string text;
+            if (data is { Length: > 0 })
+            {
+                text = Encoding.UTF8.GetString(data);
+            }
+            else
+            {
+                text = response.Content ?? string.Empty;
+            }
+
+            return new BandcampStatdownloadProbeResult
+            {
+                StatusCode = (int)response.StatusCode,
+                StreamedToFile = false,
+                Content = text,
+                ContentType = contentType
+            };
+        }
+
         private async Task DownloadToFileViaLidarrHttpAsync(
             string url,
             string cookies,

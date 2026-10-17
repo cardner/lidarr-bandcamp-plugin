@@ -134,33 +134,32 @@ namespace Lidarr.Plugin.Bandcamp.ConsoleHarness
                 return 5;
             }
 
-            var resolved = await api.ResolveStatdownloadUrlAsync(normalized, formatUrl!, format!).ConfigureAwait(false);
-            byte[]? payload = null;
-            string? fileUrl = null;
-
-            if (resolved?.DirectResponse?.ResponseData is { Length: > 0 } directBytes)
-            {
-                payload = directBytes;
-            }
-            else
-            {
-                fileUrl = resolved?.DownloadUrl ?? formatUrl!;
-                Console.WriteLine($"Resolved file URL host: {new Uri(fileUrl).Host}");
-                var bytes = await native.GetBytesAsync(fileUrl, normalized).ConfigureAwait(false);
-                if (bytes.RawBytes == null || bytes.RawBytes.Length == 0)
-                {
-                    Console.WriteLine($"Download failed with HTTP {bytes.StatusCode}");
-                    return 6;
-                }
-
-                payload = bytes.RawBytes;
-            }
-
             var safeName = string.Join("_", $"{target.BandName}-{target.Title}".Split(Path.GetInvalidFileNameChars()));
             var path = Path.Combine(outDir, $"{safeName}.zip");
-            await File.WriteAllBytesAsync(path, payload!).ConfigureAwait(false);
 
-            Console.WriteLine($"Wrote {payload!.Length} bytes → {path}");
+            // Stream the first response (one-shot URL) — never buffer a full FLAC zip.
+            var resolved = await api.ResolveStatdownloadUrlAsync(
+                    normalized,
+                    formatUrl!,
+                    format!,
+                    path)
+                .ConfigureAwait(false);
+
+            if (resolved?.StreamedToFile != true)
+            {
+                var fileUrl = resolved?.DownloadUrl ?? formatUrl!;
+                Console.WriteLine($"Resolved file URL host: {new Uri(fileUrl).Host}");
+                await native.DownloadToFileAsync(fileUrl, normalized, path).ConfigureAwait(false);
+            }
+
+            var length = new FileInfo(path).Length;
+            if (length == 0)
+            {
+                Console.WriteLine("Download wrote zero bytes.");
+                return 6;
+            }
+
+            Console.WriteLine($"Wrote {length} bytes → {path}");
             Console.WriteLine("=== Smoke OK (auth + collection + download) ===");
             return 0;
         }
