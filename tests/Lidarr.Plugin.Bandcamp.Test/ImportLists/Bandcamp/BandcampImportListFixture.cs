@@ -1,18 +1,14 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using Moq;
 using NLog;
 using NzbDrone.Common.Http;
 using NzbDrone.Core.Configuration;
-using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download.Clients.Bandcamp;
 using NzbDrone.Core.Http.Bandcamp;
 using NzbDrone.Core.ImportLists;
 using NzbDrone.Core.ImportLists.Bandcamp;
-using NzbDrone.Core.MetadataSource;
-using NzbDrone.Core.Music;
 using NzbDrone.Core.Parser;
 using Xunit;
 
@@ -22,14 +18,14 @@ namespace Lidarr.Plugin.Bandcamp.Test.ImportLists.Bandcamp
     {
         private readonly Mock<IHttpClient> _httpClientMock;
         private readonly Mock<IImportListStatusService> _status;
-        private readonly Mock<ISearchForNewAlbum> _albumSearch;
+        private readonly Mock<IBandcampMetadataAlbumSearch> _albumSearch;
         private readonly BandcampImportList _subject;
 
         public BandcampImportListFixture()
         {
             _httpClientMock = new Mock<IHttpClient>();
             _status = new Mock<IImportListStatusService>();
-            _albumSearch = new Mock<ISearchForNewAlbum>();
+            _albumSearch = new Mock<IBandcampMetadataAlbumSearch>();
             var logger = LogManager.GetCurrentClassLogger();
             var bandcampHttpClient = BandcampHttpClient.ForTests(_httpClientMock.Object, logger);
             var apiClient = new BandcampApiClient(bandcampHttpClient, logger);
@@ -80,24 +76,33 @@ namespace Lidarr.Plugin.Bandcamp.Test.ImportLists.Bandcamp
         }
 
         [Fact]
+        public void Constructor_DoesNotRequireISearchForNewAlbum()
+        {
+            var ctor = typeof(BandcampImportList).GetConstructors().Single();
+            var paramTypes = ctor.GetParameters().Select(p => p.ParameterType).ToArray();
+
+            Assert.DoesNotContain(paramTypes, t => t.Name == "ISearchForNewAlbum");
+            Assert.Contains(typeof(IBandcampMetadataAlbumSearch), paramTypes);
+        }
+
+        [Fact]
         public void Fetch_EmitsMappedMbids_AndSkipsSkyHookFailures()
         {
             SetupCollectionAuthAndItems();
 
             _albumSearch
-                .Setup(s => s.SearchForNewAlbum("Fresh", "Fresh Band"))
-                .Returns(new List<Album>
+                .Setup(s => s.FindAlbum("Fresh", "Fresh Band", It.IsAny<string?>()))
+                .Returns(new BandcampMetadataAlbumMatch
                 {
-                    CreateMappedAlbum(
-                        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                        "Fresh",
-                        "11111111-2222-3333-4444-555555555555",
-                        "Fresh Band")
+                    AlbumMusicBrainzId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    AlbumTitle = "Fresh",
+                    ArtistMusicBrainzId = "11111111-2222-3333-4444-555555555555",
+                    ArtistName = "Fresh Band"
                 });
 
             _albumSearch
-                .Setup(s => s.SearchForNewAlbum("Boomtown", "Boomtown"))
-                .Throws(new Exception("SkyHook 500 Unable to communicate with LidarrAPI"));
+                .Setup(s => s.FindAlbum("Boomtown", "Boomtown", It.IsAny<string?>()))
+                .Throws(new BandcampSkyHookHttpException(500, "SkyHook 500 Unable to communicate with LidarrAPI"));
 
             var items = _subject.Fetch();
 
@@ -108,7 +113,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.ImportLists.Bandcamp
             Assert.Equal("11111111-2222-3333-4444-555555555555", album.ArtistMusicBrainzId);
             Assert.Equal(9, album.ImportListId);
             _status.Verify(s => s.RecordSuccess(9), Times.Once);
-            _albumSearch.Verify(s => s.SearchForNewAlbum(It.IsAny<string>(), It.IsAny<string>()), Times.Exactly(2));
+            _albumSearch.Verify(s => s.FindAlbum(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Exactly(2));
         }
 
         [Fact]
@@ -147,21 +152,20 @@ namespace Lidarr.Plugin.Bandcamp.Test.ImportLists.Bandcamp
                 });
 
             _albumSearch
-                .Setup(s => s.SearchForNewAlbum("Album Title", "Artist Name"))
-                .Returns(new List<Album>
+                .Setup(s => s.FindAlbum("Album Title", "Artist Name", It.IsAny<string?>()))
+                .Returns(new BandcampMetadataAlbumMatch
                 {
-                    CreateMappedAlbum(
-                        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                        "Album Title",
-                        "11111111-2222-3333-4444-555555555555",
-                        "Artist Name")
+                    AlbumMusicBrainzId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    AlbumTitle = "Album Title",
+                    ArtistMusicBrainzId = "11111111-2222-3333-4444-555555555555",
+                    ArtistName = "Artist Name"
                 });
 
             var items = _subject.Fetch();
 
             Assert.Single(items);
-            _albumSearch.Verify(s => s.SearchForNewAlbum("Album Title", "Artist Name"), Times.Once);
-            _albumSearch.Verify(s => s.SearchForNewAlbum("Artist Name - Album Title - Single", It.IsAny<string>()), Times.Never);
+            _albumSearch.Verify(s => s.FindAlbum("Album Title", "Artist Name", It.IsAny<string?>()), Times.Once);
+            _albumSearch.Verify(s => s.FindAlbum("Artist Name - Album Title - Single", It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
         }
 
         [Fact]
@@ -202,7 +206,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.ImportLists.Bandcamp
             var items = _subject.Fetch();
 
             Assert.Empty(items);
-            _albumSearch.Verify(s => s.SearchForNewAlbum(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+            _albumSearch.Verify(s => s.FindAlbum(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
         }
 
         [Fact]
@@ -264,26 +268,6 @@ namespace Lidarr.Plugin.Bandcamp.Test.ImportLists.Bandcamp
                         _ => CreateStringResponse("{}", request)
                     };
                 });
-        }
-
-        private static Album CreateMappedAlbum(string albumMbId, string albumTitle, string artistMbId, string artistName)
-        {
-            var metadata = new ArtistMetadata
-            {
-                ForeignArtistId = artistMbId,
-                Name = artistName
-            };
-
-            return new Album
-            {
-                ForeignAlbumId = albumMbId,
-                Title = albumTitle,
-                ArtistMetadata = new LazyLoaded<ArtistMetadata>(metadata),
-                Artist = new LazyLoaded<Artist>(new Artist
-                {
-                    Metadata = new LazyLoaded<ArtistMetadata>(metadata)
-                })
-            };
         }
 
         private static HttpResponse CreateStringResponse(string content, HttpRequest request, HttpStatusCode statusCode = HttpStatusCode.OK)
