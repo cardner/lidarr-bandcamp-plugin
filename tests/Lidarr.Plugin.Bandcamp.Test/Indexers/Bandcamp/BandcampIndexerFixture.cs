@@ -28,7 +28,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
         {
             _httpClientMock = new Mock<IHttpClient>();
             var logger = LogManager.GetCurrentClassLogger();
-            var bandcampHttpClient = new BandcampHttpClient(_httpClientMock.Object, logger);
+            var bandcampHttpClient = BandcampHttpClient.ForTests(_httpClientMock.Object, logger);
             var apiClient = new BandcampApiClient(bandcampHttpClient, logger);
 
             _subject = new BandcampIndexer(

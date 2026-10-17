@@ -27,7 +27,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
         {
             var logger = LogManager.GetCurrentClassLogger();
             var httpClient = new Mock<IHttpClient>();
-            var apiClient = new BandcampApiClient(new BandcampHttpClient(httpClient.Object, logger), logger);
+            var apiClient = new BandcampApiClient(BandcampHttpClient.ForTests(httpClient.Object, logger), logger);
             var registry = new BandcampDownloadRegistry();
             var proxy = new BlockingProxy();
             using var queue = new DownloadTaskQueue(proxy, registry, logger);
@@ -94,7 +94,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
         {
             var logger = LogManager.GetCurrentClassLogger();
             var httpClient = new Mock<IHttpClient>();
-            var apiClient = new BandcampApiClient(new BandcampHttpClient(httpClient.Object, logger), logger);
+            var apiClient = new BandcampApiClient(BandcampHttpClient.ForTests(httpClient.Object, logger), logger);
             var registry = new BandcampDownloadRegistry();
             var proxy = new BlockingProxy();
             using var queue = new DownloadTaskQueue(proxy, registry, logger);
@@ -179,7 +179,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
             Assert.Equal(BandcampDownloadStatus.Failed, tracked!.Status);
             Assert.False(string.IsNullOrWhiteSpace(tracked.ErrorMessage));
             Assert.Contains("Bandcamp download failed (file_download)", tracked.ErrorMessage);
-            Assert.Contains("unknown error", tracked.ErrorMessage);
+            Assert.Contains("IOException: unknown error", tracked.ErrorMessage);
         }
 
         private sealed class BlockingProxy : IBandcampDownloadProxy

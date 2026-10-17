@@ -51,7 +51,7 @@ namespace Lidarr.Plugin.Bandcamp.ConsoleHarness
 
             using var native = new BandcampNativeHttp(logger);
             // Native-backed client: browser UA never touches Lidarr ManagedHttpDispatcher.
-            var http = new BandcampHttpClient(native, logger);
+            var http = BandcampHttpClient.ForNative(native, logger);
             var api = new BandcampApiClient(http, logger);
 
             var probe = await api.ProbeAuthAsync(cookies).ConfigureAwait(false);

@@ -139,7 +139,10 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                         : 0,
                     OutputPath = new OsPath(bcItem.OutputPath),
                     Status = MapStatus(bcItem.Status),
-                    Message = bcItem.ErrorMessage,
+                    Message = string.IsNullOrWhiteSpace(bcItem.ErrorMessage) &&
+                              bcItem.Status == BandcampDownloadStatus.Failed
+                        ? BandcampPathGuard.FormatDownloadFailure(bcItem.Phase, "unknown error")
+                        : bcItem.ErrorMessage,
                     CanBeRemoved = bcItem.Status == BandcampDownloadStatus.Completed ||
                                    bcItem.Status == BandcampDownloadStatus.Failed,
                     CanMoveFiles = bcItem.Status == BandcampDownloadStatus.Completed

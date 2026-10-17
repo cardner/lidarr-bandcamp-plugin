@@ -36,7 +36,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Http
             });
 
             using var http = new HttpClient(handler);
-            using var client = new BandcampNativeHttp(http, LogManager.GetCurrentClassLogger());
+            using var client = BandcampNativeHttp.ForTests(http, LogManager.GetCurrentClassLogger());
 
             var result = await client.GetAsync("https://bandcamp.com/api/fan/2/collection_summary", "raw-cookie-value");
 

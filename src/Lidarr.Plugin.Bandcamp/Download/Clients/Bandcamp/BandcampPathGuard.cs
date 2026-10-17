@@ -101,5 +101,28 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             var cleanMessage = string.IsNullOrWhiteSpace(message) ? "unknown error" : message.Trim();
             return $"Bandcamp download failed ({cleanPhase}): {cleanMessage}";
         }
+
+        public static string FormatDownloadFailure(string phase, Exception exception)
+        {
+            if (exception == null)
+            {
+                return FormatDownloadFailure(phase, "unknown error");
+            }
+
+            // Prefer Message; if empty (rare), include exception type so Queue is never blank.
+            var detail = string.IsNullOrWhiteSpace(exception.Message)
+                ? $"{exception.GetType().Name}: unknown error"
+                : exception.Message.Trim();
+
+            // Unwrap one level of AggregateException for a clearer Queue tooltip.
+            if (exception is AggregateException aggregate &&
+                aggregate.InnerExceptions.Count == 1 &&
+                aggregate.InnerExceptions[0] != null)
+            {
+                return FormatDownloadFailure(phase, aggregate.InnerExceptions[0]);
+            }
+
+            return FormatDownloadFailure(phase, detail);
+        }
     }
 }

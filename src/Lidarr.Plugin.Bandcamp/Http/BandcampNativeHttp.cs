@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,21 +26,29 @@ namespace NzbDrone.Core.Http.Bandcamp
 
         private readonly HttpClient _httpClient;
         private readonly Logger _logger;
+        private readonly bool _ownsClient;
         private readonly object _rateGate = new();
         private DateTime _nextAllowedUtc = DateTime.MinValue;
 
         public BandcampNativeHttp(Logger logger)
-            : this(CreateDefaultClient(), logger)
+            : this(CreateDefaultClient(), logger, ownsClient: true)
         {
+        }
+
+        private BandcampNativeHttp(HttpClient httpClient, Logger logger, bool ownsClient)
+        {
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _ownsClient = ownsClient;
         }
 
         /// <summary>
         /// Test seam — inject a custom <see cref="HttpClient"/> (e.g. with a handler).
+        /// Not used by Lidarr DI (avoids DryIoc auto-creating a bare HttpClient without browser UA).
         /// </summary>
-        public BandcampNativeHttp(HttpClient httpClient, Logger logger)
+        public static BandcampNativeHttp ForTests(HttpClient httpClient, Logger logger)
         {
-            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            return new BandcampNativeHttp(httpClient, logger, ownsClient: false);
         }
 
         public static HttpClient CreateDefaultClient()
@@ -50,9 +59,10 @@ namespace NzbDrone.Core.Http.Bandcamp
                 UseCookies = false
             };
 
+            // Large FLAC album zips often exceed 400MB; allow slow Docker/NAS links.
             var client = new HttpClient(handler)
             {
-                Timeout = TimeSpan.FromMinutes(5)
+                Timeout = TimeSpan.FromMinutes(30)
             };
 
             client.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserUserAgent);
@@ -116,6 +126,54 @@ namespace NzbDrone.Core.Http.Bandcamp
             };
         }
 
+        /// <summary>
+        /// Streams response body to <paramref name="filePath"/> without buffering the
+        /// full archive in memory (critical for ~400MB+ Bandcamp FLAC zips in Docker).
+        /// </summary>
+        public async Task DownloadToFileAsync(string url, string cookies, string filePath, CancellationToken cancellationToken = default)
+        {
+            await WaitForRateLimitAsync(cancellationToken).ConfigureAwait(false);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            ApplyCookie(request, cookies);
+
+            _logger.Debug("Bandcamp native download: GET {0} -> {1}", url, filePath);
+
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            response.EnsureSuccessStatusCode();
+
+            var contentType = response.Content.Headers.ContentType?.ToString() ?? string.Empty;
+            if (contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Received HTML response instead of expected audio archive. " +
+                    "The download URL may have expired or the session cookies may be invalid.");
+            }
+
+            await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+            await using (var destination = new FileStream(
+                filePath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 1024 * 128,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                await source.CopyToAsync(destination, 1024 * 128, cancellationToken).ConfigureAwait(false);
+            }
+
+            var length = new FileInfo(filePath).Length;
+            _logger.Debug("Bandcamp native download complete: {0} -> {1} ({2} bytes)",
+                url, filePath, length);
+
+            if (length == 0)
+            {
+                throw new InvalidOperationException("Download response contained no data.");
+            }
+        }
+
         private async Task<BandcampHttpResult> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             await WaitForRateLimitAsync(cancellationToken).ConfigureAwait(false);
@@ -174,7 +232,10 @@ namespace NzbDrone.Core.Http.Bandcamp
 
         public void Dispose()
         {
-            _httpClient.Dispose();
+            if (_ownsClient)
+            {
+                _httpClient.Dispose();
+            }
         }
     }
 

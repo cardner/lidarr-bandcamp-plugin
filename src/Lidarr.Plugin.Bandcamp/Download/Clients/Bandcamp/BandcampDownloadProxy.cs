@@ -247,9 +247,18 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Use the API client's DownloadFileAsync which validates Content-Type
-            var response = await _apiClient.DownloadFileAsync(cookies, fileUrl).ConfigureAwait(false);
-            await WriteResponseToFileAsync(response, tempFilePath, item, cancellationToken).ConfigureAwait(false);
+            // Stream CDN bytes to disk (same native HTTP path as the console harness).
+            // Avoids buffering 400MB+ zips in RAM via Lidarr IHttpClient.
+            await _httpClient.DownloadToFileAsync(fileUrl, cookies, tempFilePath, cancellationToken)
+                .ConfigureAwait(false);
+
+            var length = new FileInfo(tempFilePath).Length;
+            item.TotalSize = length;
+            item.DownloadedBytes = length;
+            item.Progress = 1.0;
+
+            _logger.Debug("Bandcamp download proxy [{0}]: File download complete ({1} bytes)",
+                item.DownloadId, item.DownloadedBytes);
         }
 
         private async Task WriteResponseToFileAsync(
