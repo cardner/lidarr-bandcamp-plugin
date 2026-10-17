@@ -129,8 +129,15 @@ namespace NzbDrone.Core.Http.Bandcamp
         /// <summary>
         /// Streams response body to <paramref name="filePath"/> without buffering the
         /// full archive in memory (critical for ~400MB+ Bandcamp FLAC zips in Docker).
+        /// Invokes <paramref name="progress"/> with (downloadedBytes, contentLengthOrNull)
+        /// as chunks arrive so Lidarr Activity can show a live progress bar.
         /// </summary>
-        public async Task DownloadToFileAsync(string url, string cookies, string filePath, CancellationToken cancellationToken = default)
+        public async Task DownloadToFileAsync(
+            string url,
+            string cookies,
+            string filePath,
+            CancellationToken cancellationToken = default,
+            Action<long, long?>? progress = null)
         {
             await WaitForRateLimitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -152,26 +159,40 @@ namespace NzbDrone.Core.Http.Bandcamp
                     "The download URL may have expired or the session cookies may be invalid.");
             }
 
+            long? contentLength = response.Content.Headers.ContentLength;
+            progress?.Invoke(0, contentLength);
+
+            const int bufferSize = 1024 * 128;
+            var buffer = new byte[bufferSize];
+            long downloaded = 0;
+
             await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
             await using (var destination = new FileStream(
                 filePath,
                 FileMode.Create,
                 FileAccess.Write,
                 FileShare.None,
-                bufferSize: 1024 * 128,
+                bufferSize: bufferSize,
                 FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                await source.CopyToAsync(destination, 1024 * 128, cancellationToken).ConfigureAwait(false);
+                int read;
+                while ((read = await source.ReadAsync(buffer.AsMemory(0, bufferSize), cancellationToken).ConfigureAwait(false)) > 0)
+                {
+                    await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                    downloaded += read;
+                    progress?.Invoke(downloaded, contentLength);
+                }
             }
 
-            var length = new FileInfo(filePath).Length;
-            _logger.Debug("Bandcamp native download complete: {0} -> {1} ({2} bytes)",
-                url, filePath, length);
-
-            if (length == 0)
+            if (downloaded == 0)
             {
                 throw new InvalidOperationException("Download response contained no data.");
             }
+
+            progress?.Invoke(downloaded, contentLength ?? downloaded);
+
+            _logger.Debug("Bandcamp native download complete: {0} -> {1} ({2} bytes)",
+                url, filePath, downloaded);
         }
 
         private async Task<BandcampHttpResult> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

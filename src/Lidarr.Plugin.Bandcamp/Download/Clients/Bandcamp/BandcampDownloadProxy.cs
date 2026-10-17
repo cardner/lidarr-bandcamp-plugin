@@ -234,9 +234,9 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         }
 
         /// <summary>
-        /// Downloads a file from the resolved URL to a local temp file.
-        /// Lidarr's HttpResponse buffers the full response into byte[], so we write
-        /// ResponseData to disk in one shot. Progress jumps to 1.0 on completion.
+        /// Streams the resolved CDN URL to a local temp file, updating
+        /// <see cref="BandcampDownloadItem"/> progress as chunks arrive so Lidarr
+        /// Activity → Queue can show Progress / Time Left while the transfer runs.
         /// </summary>
         private async Task DownloadToFileAsync(
             string cookies,
@@ -247,15 +247,17 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Stream CDN bytes to disk (same native HTTP path as the console harness).
-            // Avoids buffering 400MB+ zips in RAM via Lidarr IHttpClient.
-            await _httpClient.DownloadToFileAsync(fileUrl, cookies, tempFilePath, cancellationToken)
+            item.DownloadStartedAt ??= DateTime.UtcNow;
+
+            await _httpClient.DownloadToFileAsync(
+                    fileUrl,
+                    cookies,
+                    tempFilePath,
+                    cancellationToken,
+                    (downloaded, contentLength) => ApplyDownloadProgress(item, downloaded, contentLength))
                 .ConfigureAwait(false);
 
-            var length = new FileInfo(tempFilePath).Length;
-            item.TotalSize = length;
-            item.DownloadedBytes = length;
-            item.Progress = 1.0;
+            FinalizeDownloadProgress(item, tempFilePath);
 
             _logger.Debug("Bandcamp download proxy [{0}]: File download complete ({1} bytes)",
                 item.DownloadId, item.DownloadedBytes);
@@ -273,17 +275,54 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 throw new DownloadException("Download response contained no data.");
             }
 
-            // Track size for progress reporting
-            item.TotalSize = responseData.Length;
+            item.DownloadStartedAt ??= DateTime.UtcNow;
+            ApplyDownloadProgress(item, 0, responseData.Length);
 
-            // Write to temp file asynchronously
             await File.WriteAllBytesAsync(tempFilePath, responseData, cancellationToken).ConfigureAwait(false);
 
-            item.DownloadedBytes = responseData.Length;
-            item.Progress = 1.0;
+            FinalizeDownloadProgress(item, tempFilePath);
 
             _logger.Debug("Bandcamp download proxy [{0}]: File download complete ({1} bytes)",
                 item.DownloadId, item.DownloadedBytes);
+        }
+
+        /// <summary>
+        /// Updates size/progress fields consumed by <c>GetItems()</c>. Prefer CDN
+        /// Content-Length when present; otherwise keep any size seeded from the release.
+        /// </summary>
+        internal static void ApplyDownloadProgress(BandcampDownloadItem item, long downloadedBytes, long? contentLength)
+        {
+            if (contentLength is > 0)
+            {
+                item.TotalSize = contentLength.Value;
+            }
+
+            item.DownloadedBytes = downloadedBytes;
+
+            if (item.TotalSize > 0)
+            {
+                item.Progress = Math.Clamp((double)downloadedBytes / item.TotalSize, 0.0, 1.0);
+            }
+            else
+            {
+                item.Progress = 0.0;
+            }
+        }
+
+        internal static void FinalizeDownloadProgress(BandcampDownloadItem item, string filePath)
+        {
+            var length = item.DownloadedBytes > 0
+                ? item.DownloadedBytes
+                : new FileInfo(filePath).Length;
+
+            if (length <= 0)
+            {
+                throw new DownloadException("Download response contained no data.");
+            }
+
+            item.TotalSize = length;
+            item.DownloadedBytes = length;
+            item.Progress = 1.0;
         }
 
         /// <summary>

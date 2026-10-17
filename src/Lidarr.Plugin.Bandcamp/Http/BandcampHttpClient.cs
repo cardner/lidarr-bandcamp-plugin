@@ -147,19 +147,28 @@ namespace NzbDrone.Core.Http.Bandcamp
         /// Streams a Bandcamp CDN / statdownload URL straight to disk (avoids buffering
         /// ~400MB+ FLAC zips in RAM — important in memory-constrained Docker).
         /// </summary>
-        public Task DownloadToFileAsync(string url, string cookies, string filePath, CancellationToken cancellationToken = default)
+        public Task DownloadToFileAsync(
+            string url,
+            string cookies,
+            string filePath,
+            CancellationToken cancellationToken = default,
+            Action<long, long?>? progress = null)
         {
             if (_nativeHttp != null)
             {
-                return _nativeHttp.DownloadToFileAsync(url, cookies, filePath, cancellationToken);
+                return _nativeHttp.DownloadToFileAsync(url, cookies, filePath, cancellationToken, progress);
             }
 
             // Test seam: buffer via IHttpClient then write (mocks return small payloads).
-            return DownloadToFileViaLidarrHttpAsync(url, cookies, filePath, cancellationToken);
+            return DownloadToFileViaLidarrHttpAsync(url, cookies, filePath, cancellationToken, progress);
         }
 
         private async Task DownloadToFileViaLidarrHttpAsync(
-            string url, string cookies, string filePath, CancellationToken cancellationToken)
+            string url,
+            string cookies,
+            string filePath,
+            CancellationToken cancellationToken,
+            Action<long, long?>? progress)
         {
             var builder = CreateRequestBuilder(url, cookies);
             var request = builder.Build();
@@ -170,7 +179,9 @@ namespace NzbDrone.Core.Http.Bandcamp
                 throw new InvalidOperationException("Download response contained no data.");
             }
 
+            progress?.Invoke(0, data.Length);
             await File.WriteAllBytesAsync(filePath, data, cancellationToken).ConfigureAwait(false);
+            progress?.Invoke(data.Length, data.Length);
         }
 
         private async Task<HttpResponse> ExecuteViaNativeAsync(HttpRequest request)
