@@ -15,6 +15,7 @@ using NzbDrone.Core.Indexers.Bandcamp;
 using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Core.Music;
 using NzbDrone.Core.Parser;
+using NzbDrone.Core.Parser.Model;
 using Xunit;
 
 namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
@@ -466,6 +467,87 @@ namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
             Assert.Contains(results, r => r.Title.Contains("[MP3 VBR V0]", StringComparison.OrdinalIgnoreCase));
             Assert.Contains(results, r => r.Title.Contains("[AAC]", StringComparison.OrdinalIgnoreCase));
             Assert.Contains(results, r => r.Title.Contains("[Vorbis", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void SupportsRss_IsTrue_ForPurchasePseudoFeed()
+        {
+            Assert.True(_subject.SupportsRss);
+        }
+
+        [Fact]
+        public async Task FetchRecent_UsesPurchaseDateAsPublishDate_AndPrefersFlac()
+        {
+            var status = new Mock<IIndexerStatusService>();
+            status.Setup(s => s.GetLastRssSyncReleaseInfo(It.IsAny<int>())).Returns((ReleaseInfo)null!);
+
+            var logger = LogManager.GetCurrentClassLogger();
+            var bandcampHttpClient = BandcampHttpClient.ForTests(_httpClientMock.Object, logger);
+            var apiClient = new BandcampApiClient(bandcampHttpClient, logger);
+            var subject = new BandcampIndexer(
+                _httpClientMock.Object,
+                apiClient,
+                status.Object,
+                Mock.Of<IConfigService>(),
+                Mock.Of<IParsingService>(),
+                logger)
+            {
+                Definition = new IndexerDefinition
+                {
+                    Id = 7,
+                    Name = "Bandcamp",
+                    Priority = 25,
+                    Settings = new BandcampIndexerSettings { Cookies = "testcookie" }
+                }
+            };
+
+            _httpClientMock
+                .Setup(c => c.ExecuteAsync(It.IsAny<HttpRequest>()))
+                .ReturnsAsync((HttpRequest request) =>
+                {
+                    return request.Url.FullUri switch
+                    {
+                        "https://bandcamp.com" => CreateStringResponse(
+                            @"<html><body><div id=""HomepageApp"" data-blob=""{&quot;pageContext&quot;:{&quot;identity&quot;:{&quot;fanId&quot;:12345678,&quot;isLoggedIn&quot;:true}}}""></div></body></html>",
+                            request),
+                        "https://bandcamp.com/api/fancollection/1/collection_items" => CreateStringResponse(
+                            @"{
+                                ""redownload_urls"": {
+                                    ""a111"": ""https://bandcamp.com/download?type=album&id=111""
+                                },
+                                ""items"": [
+                                    {
+                                        ""item_id"": 111,
+                                        ""item_type"": ""album"",
+                                        ""sale_item_type"": ""a"",
+                                        ""sale_item_id"": 111,
+                                        ""token"": ""1700000000:111:a:0:"",
+                                        ""item_url"": ""https://fresh.bandcamp.com/album/fresh"",
+                                        ""item_title"": ""Fresh"",
+                                        ""band_name"": ""Fresh"",
+                                        ""release_date"": ""2015-01-01T00:00:00Z"",
+                                        ""purchased"": ""15 Nov 2023 12:00:00 GMT""
+                                    }
+                                ]
+                            }",
+                            request),
+                        "https://bandcamp.com/download?type=album&id=111" => CreateStringResponse(
+                            @"<html><body><div id=""pagedata"" data-blob=""{&quot;digital_items&quot;:[{&quot;item_id&quot;:111,&quot;item_type&quot;:&quot;album&quot;,&quot;title&quot;:&quot;Fresh&quot;,&quot;downloads&quot;:{&quot;mp3-320&quot;:{&quot;url&quot;:&quot;https://bandcamp.com/statdownload/album/111?sig=mp3&quot;,&quot;size_mb&quot;:&quot;88MB&quot;},&quot;flac&quot;:{&quot;url&quot;:&quot;https://bandcamp.com/statdownload/album/111?sig=flac&quot;,&quot;size_mb&quot;:&quot;123MB&quot;}}}]}""></div></body></html>",
+                            request),
+                        "https://fresh.bandcamp.com/album/fresh" => CreateStringResponse(
+                            @"<html><body><script data-tralbum=""{&quot;trackinfo&quot;:[{&quot;duration&quot;:200.0}]}""></script></body></html>",
+                            request),
+                        _ => CreateStringResponse(@"{""items"": []}", request)
+                    };
+                });
+
+            var results = await subject.FetchRecent();
+
+            Assert.NotEmpty(results);
+            Assert.Contains("[FLAC]", results[0].Title, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(new DateTime(2023, 11, 15, 12, 0, 0, DateTimeKind.Utc), results[0].PublishDate.ToUniversalTime());
+            status.Verify(s => s.UpdateRssSyncStatus(7, It.IsAny<ReleaseInfo>()), Times.Once);
+            status.Verify(s => s.RecordSuccess(7), Times.Once);
         }
 
         [Theory]

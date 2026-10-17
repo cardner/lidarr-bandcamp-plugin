@@ -29,7 +29,8 @@ namespace NzbDrone.Core.Indexers.Bandcamp
 
         public virtual IndexerPageableRequestChain GetRecentRequests()
         {
-            // Bandcamp has no RSS feed — return empty chain
+            // Pseudo-RSS is implemented in BandcampIndexer.FetchRecent via the collection API
+            // (no HTTP RSS URL). Keep this chain empty so TestConnection stays on the cookie path.
             return new IndexerPageableRequestChain();
         }
 

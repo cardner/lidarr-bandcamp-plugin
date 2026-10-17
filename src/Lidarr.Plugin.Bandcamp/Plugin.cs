@@ -1,8 +1,8 @@
 namespace NzbDrone.Core.Plugins
 {
     /// <summary>
-    /// Lidarr plugin: Bandcamp purchase library indexer + download client.
-    /// Indexes the authenticated fan collection and downloads owned releases.
+    /// Lidarr plugin: Bandcamp purchase library indexer, download client, and Import List.
+    /// Indexes the authenticated fan collection, imports owned albums into Lidarr, and downloads releases.
     /// </summary>
     public class BandcampPlugin : Plugin
     {
