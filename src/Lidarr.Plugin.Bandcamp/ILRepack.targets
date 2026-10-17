@@ -1,25 +1,26 @@
 <!--
-  Custom ILRepack targets for Bandcamp plugin.
-  Since the plugin has no third-party dependencies of its own
-  (all deps are provided by the Lidarr host at runtime), ILRepack
-  simply repacks the plugin DLL (no-op merge) and cleans up the output.
+  Custom output cleanup for Bandcamp plugin.
+  Host assemblies (Lidarr.Core / Lidarr.Common) are ProjectReferences with
+  Private=false — they must NOT be copied into the plugin folder. The plugin
+  has no private third-party NuGet deps of its own.
 
-  Uses unique target names to avoid being overridden by the NuGet package's
-  default targets (which would fail because Lidarr DLLs aren't in output
-  and can't be resolved due to non-deterministic versioning).
+  Lidarr's PluginLoadContext uses AssemblyDependencyResolver, which expects
+  Lidarr.Plugin.Bandcamp.deps.json beside the DLL (same layout as Slskd).
+  Keep dll + deps.json + pdb; strip everything else from Release output.
 -->
 <Project>
     <Target Name="BandcampCleanOutput" AfterTargets="Build" Condition="$(Configuration.Contains('Release'))">
-        <!-- Delete all files from output that aren't our plugin DLL or PDB -->
+        <!-- Delete host/transitive DLLs and junk; keep plugin dll, deps.json, pdb -->
         <ItemGroup>
             <_OutputCleanup Include="$(OutputPath)*.dll" Exclude="$(OutputPath)$(TargetName)$(TargetExt)"/>
             <_OutputCleanup Include="$(OutputPath)*.pdb" Exclude="$(OutputPath)$(TargetName).pdb"/>
             <_OutputCleanup Include="$(OutputPath)*.xml"/>
-            <_OutputCleanup Include="$(OutputPath)*.json" Exclude="$(OutputPath)Lidarr.Plugin.Bandcamp.runtimeconfig.json"/>
-            <_OutputCleanup Include="$(OutputPath)*.deps.json"/>
+            <_OutputCleanup Include="$(OutputPath)*.json"
+                           Exclude="$(OutputPath)$(TargetName).deps.json;
+                                    $(OutputPath)$(TargetName).runtimeconfig.json"/>
         </ItemGroup>
         <Delete Files="@(_OutputCleanup)" />
-        <!-- Remove empty subdirectories -->
+        <!-- Remove empty / native runtime subdirectories (Bandcamp needs none) -->
         <ItemGroup>
             <_Dirs Include="$([System.IO.Directory]::GetDirectories('$(OutputPath)', '*', System.IO.SearchOption.AllDirectories))"/>
             <_Dirs>
@@ -27,5 +28,7 @@
             </_Dirs>
         </ItemGroup>
         <RemoveDir Directories="@(_Dirs)" Condition="%(_Dirs.FileCount)=='0'"/>
+        <Error Text="Missing $(TargetName).deps.json after cleanup — Lidarr PluginLoadContext requires it"
+               Condition="!Exists('$(OutputPath)$(TargetName).deps.json')" />
     </Target>
 </Project>

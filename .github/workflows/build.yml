@@ -93,26 +93,39 @@ jobs:
             --filter "FullyQualifiedName~Bandcamp" \
             -p:Version=${{ steps.ver.outputs.version }}
 
-      - name: Verify plugin DLL
+      - name: Package flat plugin zip
         run: |
-          DLL="src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0/${{ env.PLUGIN_NAME }}.dll"
-          test -f "$DLL" || { echo "ERROR: Plugin DLL not found at $DLL"; exit 1; }
-          echo "Plugin DLL: $DLL ($(stat -c%s "$DLL") bytes)"
-
-      - name: Zip plugin
-        run: |
-          cd src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0
-          zip "${{ github.workspace }}/${{ env.PLUGIN_NAME }}.net8.0.zip" \
-            "${{ env.PLUGIN_NAME }}.dll"
-          ls -la "${{ github.workspace }}/${{ env.PLUGIN_NAME }}.net8.0.zip"
+          # Lidarr extracts the zip into plugins/<owner>/<repo>/ and only loads
+          # Lidarr.Plugin.*.dll from that folder root (non-recursive). Entries MUST
+          # be flat: dll + deps.json (+ pdb). Never nest src/... paths or a zip-in-zip.
+          OUT="src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0"
+          STAGE="${{ github.workspace }}/artifacts/plugin"
+          ZIP="${{ github.workspace }}/${{ env.PLUGIN_NAME }}.net8.0.zip"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          for f in "${{ env.PLUGIN_NAME }}.dll" "${{ env.PLUGIN_NAME }}.deps.json" "${{ env.PLUGIN_NAME }}.pdb"; do
+            test -f "$OUT/$f" || { echo "ERROR: missing $OUT/$f"; exit 1; }
+            cp -f "$OUT/$f" "$STAGE/"
+          done
+          rm -f "$ZIP"
+          (cd "$STAGE" && zip -9 -r "$ZIP" .)
+          echo "Created $ZIP"
+          unzip -l "$ZIP"
+          unzip -Z1 "$ZIP" | grep -qx "${{ env.PLUGIN_NAME }}.dll"
+          unzip -Z1 "$ZIP" | grep -qx "${{ env.PLUGIN_NAME }}.deps.json"
+          # Fail if anything is nested (would break Lidarr discovery)
+          if unzip -Z1 "$ZIP" | grep -E '/'; then
+            echo "ERROR: zip contains nested paths — Lidarr will not load the DLL" >&2
+            exit 1
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
+          # Single flat zip only — uploading the DLL with its src/... path alongside
+          # caused users to re-upload a nested Actions artifact as the Release asset.
           name: ${{ env.PLUGIN_NAME }}.net8.0
-          path: |
-            ${{ env.PLUGIN_NAME }}.net8.0.zip
-            src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0/${{ env.PLUGIN_NAME }}.dll
+          path: ${{ env.PLUGIN_NAME }}.net8.0.zip
 
       - name: Generate changelog
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
