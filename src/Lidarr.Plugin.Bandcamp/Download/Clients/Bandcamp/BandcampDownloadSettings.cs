@@ -35,7 +35,7 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         [FieldDefinition(0, Label = "Identity Cookie", Type = FieldType.Password, HelpText = BandcampIdentityAuth.DownloadFieldHelpText, Privacy = PrivacyLevel.Password)]
         public string Cookies { get; set; }
 
-        [FieldDefinition(1, Label = "Download Path", Type = FieldType.Path, HelpText = "Directory where Bandcamp downloads will be saved before Lidarr imports them (must be writable by Lidarr)")]
+        [FieldDefinition(1, Label = "Download Path", Type = FieldType.Path, HelpText = "Writable directory for Bandcamp archives before Lidarr imports them. Docker (linuxserver/hotio): usually /downloads/bandcamp — the volume is typically mounted at /downloads; avoid /downloads/downloads unless that nested folder exists inside the container.")]
         public string DownloadPath { get; set; }
 
         public NzbDroneValidationResult Validate()

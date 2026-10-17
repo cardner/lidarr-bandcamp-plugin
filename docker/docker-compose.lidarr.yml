@@ -21,6 +21,8 @@ services:
       - "8686:8686"
     volumes:
       - lidarr-config:/config
+      # Host folder → /downloads in-container. Set Bandcamp Download Path to
+      # /downloads/bandcamp (not /downloads/downloads). See docs/docker-download-path.md
       - ./lidarr-downloads:/downloads
       # Single plugin install — do not mount the same DLL twice
       - ../artifacts/plugin:/config/plugins/cursor-project/Lidarr.Plugin.Bandcamp:ro
