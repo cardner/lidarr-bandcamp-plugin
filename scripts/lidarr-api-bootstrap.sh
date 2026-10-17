@@ -13,7 +13,7 @@ auth_hdr=(-H "X-Api-Key: ${LIDARR_API_KEY}" -H "Content-Type: application/json")
 echo "Lidarr: $LIDARR_URL"
 curl -fsS "${LIDARR_URL}/ping" >/dev/null
 curl -fsS "${LIDARR_URL}/api/v1/system/status" -H "X-Api-Key: ${LIDARR_API_KEY}" \
-  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(f"version={d.get(\"version\")} branch={d.get(\"branch\")}")'
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print("version=%s branch=%s" % (d.get("version"), d.get("branch")))'
 
 plugins=$(curl -fsS "${LIDARR_URL}/api/v1/system/plugins" -H "X-Api-Key: ${LIDARR_API_KEY}")
 echo "$plugins" | python3 -c 'import json,sys; a=json.load(sys.stdin); print("plugins:", [p["name"]+"@"+p.get("installedVersion","?") for p in a])'
@@ -67,6 +67,32 @@ json.dump(payload, sys.stdout)
 "
 }
 
+# Merge schema-built cookie/path fields into an existing resource (keeps id/name for Test uniqueness).
+merge_existing() {
+  local existing_json="$1" impl="$2" fresh_payload="$3" path_field="${4:-}"
+  EXISTING_JSON="$existing_json" IMPL="$impl" PATH_FIELD="$path_field" \
+  python3 -c "
+import json,os,sys
+arr=json.loads(os.environ['EXISTING_JSON'])
+impl=os.environ['IMPL']
+path_field=os.environ.get('PATH_FIELD') or ''
+fresh=json.load(sys.stdin)
+ex=next((x for x in arr if x.get('implementation')==impl), None)
+if not ex:
+  json.dump(fresh, sys.stdout)
+  sys.exit(0)
+# Update cookie (and download path) on the saved resource
+fresh_fields={f.get('name'): f.get('value') for f in fresh.get('fields') or []}
+for f in ex.get('fields') or []:
+  name=f.get('name')
+  if name=='cookies' and 'cookies' in fresh_fields:
+    f['value']=fresh_fields['cookies']
+  if path_field and name==path_field and path_field in fresh_fields:
+    f['value']=fresh_fields[path_field]
+json.dump(ex, sys.stdout)
+" <<<"$fresh_payload"
+}
+
 IDX=$(build_payload "${LIDARR_URL}/api/v1/indexer/schema" BandcampIndexer "Bandcamp Library" "")
 DC=$(BANDCAMP_DOWNLOAD_PATH="$BANDCAMP_DOWNLOAD_PATH" build_payload \
   "${LIDARR_URL}/api/v1/downloadclient/schema" BandcampDownloadClient "Bandcamp" \
@@ -75,27 +101,41 @@ for f in bc['fields']:
   if f.get('name')=='downloadPath':
     f['value']=path")
 
+existing_idx=$(curl -fsS "${LIDARR_URL}/api/v1/indexer" -H "X-Api-Key: ${LIDARR_API_KEY}")
+existing_dc=$(curl -fsS "${LIDARR_URL}/api/v1/downloadclient" -H "X-Api-Key: ${LIDARR_API_KEY}")
+
+IDX_TEST=$(merge_existing "$existing_idx" BandcampIndexer "$IDX")
+DC_TEST=$(merge_existing "$existing_dc" BandcampDownloadClient "$DC" downloadPath)
+
 echo "Testing indexer..."
-idx_test=$(curl -sS -X POST "${LIDARR_URL}/api/v1/indexer/test" "${auth_hdr[@]}" -d "$IDX")
-echo "$idx_test" | python3 -c 'import json,sys; d=json.load(sys.stdin); 
-print("indexer test OK" if d=={} or d==[] or d is None else d); 
+idx_test=$(curl -sS -X POST "${LIDARR_URL}/api/v1/indexer/test" "${auth_hdr[@]}" -d "$IDX_TEST")
+echo "$idx_test" | python3 -c 'import json,sys; d=json.load(sys.stdin);
+print("indexer test OK" if d in ({}, [], None) else d);
 assert d in ({}, [], None) or (isinstance(d,list) and len(d)==0), d'
 
 echo "Testing download client..."
-dc_test=$(curl -sS -X POST "${LIDARR_URL}/api/v1/downloadclient/test" "${auth_hdr[@]}" -d "$DC")
+dc_test=$(curl -sS -X POST "${LIDARR_URL}/api/v1/downloadclient/test" "${auth_hdr[@]}" -d "$DC_TEST")
 echo "$dc_test" | python3 -c 'import json,sys; d=json.load(sys.stdin);
 print("download client test OK" if d in ({}, [], None) else d);
 assert d in ({}, [], None) or (isinstance(d,list) and len(d)==0), d'
 
-# Create if not already present
-existing_idx=$(curl -fsS "${LIDARR_URL}/api/v1/indexer" -H "X-Api-Key: ${LIDARR_API_KEY}")
-echo "$existing_idx" | python3 -c 'import json,sys; a=json.load(sys.stdin); sys.exit(0 if any(i.get("implementation")=="BandcampIndexer" for i in a) else 1)' \
-  && echo "Indexer already exists" \
-  || curl -fsS -X POST "${LIDARR_URL}/api/v1/indexer?forceSave=true" "${auth_hdr[@]}" -d "$IDX" >/dev/null
+# Create or update so the cookie from env is what Lidarr uses
+if echo "$existing_idx" | python3 -c 'import json,sys; a=json.load(sys.stdin); sys.exit(0 if any(i.get("implementation")=="BandcampIndexer" for i in a) else 1)'; then
+  id=$(echo "$IDX_TEST" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+  curl -fsS -X PUT "${LIDARR_URL}/api/v1/indexer/${id}?forceSave=true" "${auth_hdr[@]}" -d "$IDX_TEST" >/dev/null
+  echo "Indexer updated (id=$id)"
+else
+  curl -fsS -X POST "${LIDARR_URL}/api/v1/indexer?forceSave=true" "${auth_hdr[@]}" -d "$IDX" >/dev/null
+  echo "Indexer created"
+fi
 
-existing_dc=$(curl -fsS "${LIDARR_URL}/api/v1/downloadclient" -H "X-Api-Key: ${LIDARR_API_KEY}")
-echo "$existing_dc" | python3 -c 'import json,sys; a=json.load(sys.stdin); sys.exit(0 if any(i.get("implementation")=="BandcampDownloadClient" for i in a) else 1)' \
-  && echo "Download client already exists" \
-  || curl -fsS -X POST "${LIDARR_URL}/api/v1/downloadclient?forceSave=true" "${auth_hdr[@]}" -d "$DC" >/dev/null
+if echo "$existing_dc" | python3 -c 'import json,sys; a=json.load(sys.stdin); sys.exit(0 if any(i.get("implementation")=="BandcampDownloadClient" for i in a) else 1)'; then
+  id=$(echo "$DC_TEST" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+  curl -fsS -X PUT "${LIDARR_URL}/api/v1/downloadclient/${id}?forceSave=true" "${auth_hdr[@]}" -d "$DC_TEST" >/dev/null
+  echo "Download client updated (id=$id)"
+else
+  curl -fsS -X POST "${LIDARR_URL}/api/v1/downloadclient?forceSave=true" "${auth_hdr[@]}" -d "$DC" >/dev/null
+  echo "Download client created"
+fi
 
 echo "Bootstrap complete. Next: UI search/grab for an owned album (see docs/lidarr-ui-checklist.md)."
