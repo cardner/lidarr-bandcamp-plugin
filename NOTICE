@@ -1,0 +1,9 @@
+This project includes code adapted from:
+
+  jtstothard/lidarr-plugin-bandcamp
+  https://github.com/jtstothard/lidarr-plugin-bandcamp
+  Licensed under the MIT License (see LICENSE.upstream-bandcamp)
+
+Modifications in this repository focus on purchase-library indexing,
+Identity Cookie auth UX, fan_id resolution via collection_summary, and
+avoiding Lidarr's "User-Agent other than Lidarr not allowed" failure mode.
