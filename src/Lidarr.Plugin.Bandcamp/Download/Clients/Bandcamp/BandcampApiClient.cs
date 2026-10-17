@@ -16,9 +16,14 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
 {
     public class BandcampResolvedDownload
     {
+        /// <summary>CDN / file URL when the first response was small JSON or plain text.</summary>
         public string? DownloadUrl { get; set; }
 
-        public HttpResponse? DirectResponse { get; set; }
+        /// <summary>
+        /// True when the first HTTP response body was the archive and was streamed
+        /// to the destination path (one-shot URL — do not re-GET).
+        /// </summary>
+        public bool StreamedToFile { get; set; }
     }
 
     /// <summary>
@@ -541,29 +546,51 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         }
 
         /// <summary>
-        /// Constructs and resolves a statdownload URL. Bandcamp uses statdownload
-        /// endpoints to track download analytics before redirecting to the actual
-        /// file URL. This follows the redirect chain and returns the final download URL.
+        /// Resolves a Bandcamp <c>statdownload</c> / popplers download URL.
+        /// The first response may be tiny JSON with a CDN URL, or the archive itself.
+        /// Binary bodies are streamed to <paramref name="archivePath"/> on that same
+        /// response (URLs are often one-shot — never probe-and-re-GET).
         /// </summary>
         /// <param name="cookies">Session cookies from browser.</param>
         /// <param name="downloadUrl">The initial download URL (from pagedata or purchase).</param>
         /// <param name="format">The desired format (e.g., "FLAC").</param>
-        /// <returns>The final download URL for the file, or null if resolution fails.</returns>
+        /// <param name="archivePath">Temp path for a direct binary first response.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <param name="progress">Optional (downloaded, contentLength) progress callback.</param>
+        /// <returns>CDN URL and/or confirmation the archive was streamed to disk.</returns>
         public async Task<BandcampResolvedDownload?> ResolveStatdownloadUrlAsync(
-            string cookies, string downloadUrl, string format)
+            string cookies,
+            string downloadUrl,
+            string format,
+            string archivePath,
+            CancellationToken cancellationToken = default,
+            Action<long, long?>? progress = null)
         {
             _logger.Debug("Bandcamp API: Resolving statdownload URL for format {0}", format);
 
-            // Bandcamp statdownload URLs look like:
-            // https://bandcamp.com/statdownload/{item_type}/{item_id}?{params}
-            // They return JSON with a "url" field pointing to the actual file
+            // Bandcamp appends format/json hints; popplers may still return the zip body.
+            // Never route this through ExecuteAsync — that materializes the full body and
+            // HttpResponse.Content string-decodes it (Docker OOM on ~400MB+ FLAC zips).
             var url = $"{downloadUrl}&.format={format}&.json=true";
 
-            var builder = _httpClient.CreateRequestBuilder(url, cookies);
-            var request = builder.Build();
-            var response = await _httpClient.ExecuteAsync(request);
+            var probe = await _httpClient.ProbeOrStreamStatdownloadAsync(
+                    url,
+                    cookies,
+                    archivePath,
+                    cancellationToken,
+                    progress)
+                .ConfigureAwait(false);
 
-            var content = response.Content ?? string.Empty;
+            if (probe.StreamedToFile)
+            {
+                _logger.Debug("Bandcamp API: Statdownload first response streamed archive to {0}", archivePath);
+                return new BandcampResolvedDownload
+                {
+                    StreamedToFile = true
+                };
+            }
+
+            var content = probe.Content ?? string.Empty;
 
             // Parse the JSON response to extract the actual download URL
             var urlMatch = StatdownloadUrlRegex.Match(content);
@@ -581,7 +608,6 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             }
 
             // Some statdownload responses return the URL directly as plain text
-            // or redirect — check if the content looks like a URL
             if (content.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             {
                 _logger.Debug("Bandcamp API: Statdownload returned direct URL");
@@ -589,23 +615,6 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 {
                     DownloadUrl = content.Trim()
                 };
-            }
-
-            // Some Bandcamp statdownload responses stream the archive directly.
-            // In that case, keep using the statdownload URL we just probed.
-            var responseData = response.ResponseData;
-            if (responseData != null && responseData.Length >= 4)
-            {
-                // ZIP local file header: PK\x03\x04
-                if (responseData[0] == 0x50 && responseData[1] == 0x4B &&
-                    responseData[2] == 0x03 && responseData[3] == 0x04)
-                {
-                    _logger.Debug("Bandcamp API: Statdownload returned archive bytes directly");
-                    return new BandcampResolvedDownload
-                    {
-                        DirectResponse = response
-                    };
-                }
             }
 
             _logger.Debug("Bandcamp API: Failed to parse statdownload response");

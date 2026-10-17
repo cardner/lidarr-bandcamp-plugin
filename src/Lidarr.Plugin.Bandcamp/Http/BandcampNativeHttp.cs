@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Net.Http;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NLog;
@@ -160,13 +161,178 @@ namespace NzbDrone.Core.Http.Bandcamp
             }
 
             long? contentLength = response.Content.Headers.ContentLength;
+            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            await StreamToFileAsync(source, filePath, contentLength, progress, peek: null, peekLength: 0, cancellationToken)
+                .ConfigureAwait(false);
+
+            _logger.Debug("Bandcamp native download complete: {0} -> {1}", url, filePath);
+        }
+
+        /// <summary>
+        /// One-shot GET for Bandcamp <c>statdownload</c> / popplers URLs that may return
+        /// either a tiny JSON redirect or the archive bytes themselves.
+        ///
+        /// Uses <see cref="HttpCompletionOption.ResponseHeadersRead"/>, peeks the body,
+        /// and either streams <b>this same response</b> to <paramref name="archivePath"/>
+        /// (never re-GET — URLs are often single-use) or returns small text for JSON parsing.
+        /// Never materializes a multi-hundred-MB body via <c>ReadAsByteArrayAsync</c> / string decode.
+        /// </summary>
+        public async Task<BandcampStatdownloadProbeResult> ProbeOrStreamStatdownloadAsync(
+            string url,
+            string cookies,
+            string archivePath,
+            CancellationToken cancellationToken = default,
+            Action<long, long?>? progress = null)
+        {
+            await WaitForRateLimitAsync(cancellationToken).ConfigureAwait(false);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            ApplyCookie(request, cookies);
+
+            _logger.Debug("Bandcamp native statdownload probe: GET {0}", url);
+
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+
+            response.EnsureSuccessStatusCode();
+
+            var contentType = response.Content.Headers.ContentType?.ToString() ?? string.Empty;
+            long? contentLength = response.Content.Headers.ContentLength;
+
+            if (contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Received HTML response instead of expected Bandcamp download payload. " +
+                    "The download URL may have expired or the session cookies may be invalid.");
+            }
+
+            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+
+            // Prefer Content-Type when Bandcamp already declares a binary archive.
+            if (LooksLikeBinaryArchiveContentType(contentType) ||
+                (contentLength is > MaxStatdownloadTextBytes))
+            {
+                _logger.Debug(
+                    "Bandcamp native statdownload: streaming binary response to {0} (Content-Type={1}, Content-Length={2})",
+                    archivePath,
+                    contentType,
+                    contentLength?.ToString() ?? "unknown");
+
+                await StreamToFileAsync(source, archivePath, contentLength, progress, peek: null, peekLength: 0, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return new BandcampStatdownloadProbeResult
+                {
+                    StatusCode = (int)response.StatusCode,
+                    StreamedToFile = true,
+                    ContentType = contentType
+                };
+            }
+
+            // Peek enough to detect ZIP magic or read a small JSON/URL body — without
+            // buffering a full FLAC zip if Content-Type/Length lied.
+            var peek = new byte[StatdownloadPeekBytes];
+            var peekLength = await ReadAtMostAsync(source, peek, cancellationToken).ConfigureAwait(false);
+
+            if (peekLength >= 4 && IsZipLocalFileHeader(peek))
+            {
+                _logger.Debug("Bandcamp native statdownload: ZIP magic on first response — streaming to {0}", archivePath);
+
+                await StreamToFileAsync(source, archivePath, contentLength, progress, peek, peekLength, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return new BandcampStatdownloadProbeResult
+                {
+                    StatusCode = (int)response.StatusCode,
+                    StreamedToFile = true,
+                    ContentType = contentType
+                };
+            }
+
+            // Small JSON / plain URL — assemble text with a hard size cap.
+            using var textBuffer = new MemoryStream(Math.Max(peekLength, 256));
+            if (peekLength > 0)
+            {
+                textBuffer.Write(peek, 0, peekLength);
+            }
+
+            var copyBuf = new byte[8192];
+            while (textBuffer.Length < MaxStatdownloadTextBytes)
+            {
+                var toRead = (int)Math.Min(copyBuf.Length, MaxStatdownloadTextBytes - textBuffer.Length);
+                var read = await source.ReadAsync(copyBuf.AsMemory(0, toRead), cancellationToken).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                textBuffer.Write(copyBuf, 0, read);
+            }
+
+            // If the body keeps going past the text cap, treat remaining as archive on this
+            // same connection (one-shot URL — do not discard and re-GET).
+            var next = await source.ReadAsync(copyBuf.AsMemory(0, 1), cancellationToken).ConfigureAwait(false);
+            if (next > 0)
+            {
+                _logger.Debug(
+                    "Bandcamp native statdownload: body exceeded {0} bytes without ZIP magic — streaming remainder to {1}",
+                    MaxStatdownloadTextBytes,
+                    archivePath);
+
+                var overflowPeek = new byte[textBuffer.Length + 1];
+                var prior = textBuffer.ToArray();
+                Buffer.BlockCopy(prior, 0, overflowPeek, 0, prior.Length);
+                overflowPeek[prior.Length] = copyBuf[0];
+
+                await StreamToFileAsync(
+                        source,
+                        archivePath,
+                        contentLength,
+                        progress,
+                        overflowPeek,
+                        overflowPeek.Length,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                return new BandcampStatdownloadProbeResult
+                {
+                    StatusCode = (int)response.StatusCode,
+                    StreamedToFile = true,
+                    ContentType = contentType
+                };
+            }
+
+            var text = Encoding.UTF8.GetString(textBuffer.ToArray());
+
+            _logger.Debug(
+                "Bandcamp native statdownload: text response ({0} bytes, Content-Type={1})",
+                text.Length,
+                contentType);
+
+            return new BandcampStatdownloadProbeResult
+            {
+                StatusCode = (int)response.StatusCode,
+                StreamedToFile = false,
+                Content = text,
+                ContentType = contentType
+            };
+        }
+
+        private static async Task StreamToFileAsync(
+            Stream source,
+            string filePath,
+            long? contentLength,
+            Action<long, long?>? progress,
+            byte[]? peek,
+            int peekLength,
+            CancellationToken cancellationToken)
+        {
             progress?.Invoke(0, contentLength);
 
             const int bufferSize = 1024 * 128;
             var buffer = new byte[bufferSize];
             long downloaded = 0;
 
-            await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
             await using (var destination = new FileStream(
                 filePath,
                 FileMode.Create,
@@ -175,6 +341,13 @@ namespace NzbDrone.Core.Http.Bandcamp
                 bufferSize: bufferSize,
                 FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
+                if (peek != null && peekLength > 0)
+                {
+                    await destination.WriteAsync(peek.AsMemory(0, peekLength), cancellationToken).ConfigureAwait(false);
+                    downloaded = peekLength;
+                    progress?.Invoke(downloaded, contentLength);
+                }
+
                 int read;
                 while ((read = await source.ReadAsync(buffer.AsMemory(0, bufferSize), cancellationToken).ConfigureAwait(false)) > 0)
                 {
@@ -190,10 +363,52 @@ namespace NzbDrone.Core.Http.Bandcamp
             }
 
             progress?.Invoke(downloaded, contentLength ?? downloaded);
-
-            _logger.Debug("Bandcamp native download complete: {0} -> {1} ({2} bytes)",
-                url, filePath, downloaded);
         }
+
+        private static async Task<int> ReadAtMostAsync(Stream source, byte[] buffer, CancellationToken cancellationToken)
+        {
+            var total = 0;
+            while (total < buffer.Length)
+            {
+                var read = await source.ReadAsync(buffer.AsMemory(total, buffer.Length - total), cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                total += read;
+            }
+
+            return total;
+        }
+
+        private static bool IsZipLocalFileHeader(byte[] data)
+        {
+            return data.Length >= 4 &&
+                   data[0] == 0x50 && data[1] == 0x4B &&
+                   data[2] == 0x03 && data[3] == 0x04;
+        }
+
+        private static bool LooksLikeBinaryArchiveContentType(string contentType)
+        {
+            if (string.IsNullOrWhiteSpace(contentType))
+            {
+                return false;
+            }
+
+            return contentType.Contains("application/zip", StringComparison.OrdinalIgnoreCase) ||
+                   contentType.Contains("application/x-zip", StringComparison.OrdinalIgnoreCase) ||
+                   contentType.Contains("application/octet-stream", StringComparison.OrdinalIgnoreCase) ||
+                   contentType.Contains("application/x-download", StringComparison.OrdinalIgnoreCase) ||
+                   contentType.Contains("audio/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Peek window large enough for JSON url payloads; tiny vs FLAC zips.</summary>
+        private const int StatdownloadPeekBytes = 4096;
+
+        /// <summary>Hard cap for non-archive text bodies (JSON / plain URL).</summary>
+        private const int MaxStatdownloadTextBytes = 256 * 1024;
 
         private async Task<BandcampHttpResult> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -265,6 +480,23 @@ namespace NzbDrone.Core.Http.Bandcamp
         public int StatusCode { get; set; }
         public string? Content { get; set; }
         public byte[]? RawBytes { get; set; }
+        public string? ContentType { get; set; }
+    }
+
+    /// <summary>
+    /// Result of a one-shot statdownload / popplers probe: either a small text body
+    /// (CDN URL JSON) or confirmation that the archive was streamed to disk.
+    /// </summary>
+    public sealed class BandcampStatdownloadProbeResult
+    {
+        public int StatusCode { get; set; }
+
+        /// <summary>True when the first response body was streamed to the archive path.</summary>
+        public bool StreamedToFile { get; set; }
+
+        /// <summary>Small JSON / plain URL body when <see cref="StreamedToFile"/> is false.</summary>
+        public string? Content { get; set; }
+
         public string? ContentType { get; set; }
     }
 }

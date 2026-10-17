@@ -105,6 +105,142 @@ namespace Lidarr.Plugin.Bandcamp.Test.Http
             }
         }
 
+        [Fact]
+        public async Task ProbeOrStreamStatdownloadAsync_JsonUrl_ReturnsTextWithoutWritingFile()
+        {
+            var json = @"{""url"":""https://pop.s3.amazonaws.com/bandcamp/album.zip?sig=1""}";
+            var requestCount = 0;
+
+            var handler = new CaptureHandler((_, _) =>
+            {
+                requestCount++;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+                };
+            });
+
+            using var http = new HttpClient(handler);
+            using var client = BandcampNativeHttp.ForTests(http, LogManager.GetCurrentClassLogger());
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-probe-{Guid.NewGuid():N}.zip");
+
+            try
+            {
+                var result = await client.ProbeOrStreamStatdownloadAsync(
+                    "https://popplers5.bandcamp.com/download/album?enc=flac&.format=flac&.json=true",
+                    "identity=test",
+                    archivePath);
+
+                Assert.Equal(1, requestCount);
+                Assert.False(result.StreamedToFile);
+                Assert.Contains("s3.amazonaws.com", result.Content);
+                Assert.False(File.Exists(archivePath));
+            }
+            finally
+            {
+                if (File.Exists(archivePath))
+                {
+                    File.Delete(archivePath);
+                }
+            }
+        }
+
+        [Fact]
+        public async Task ProbeOrStreamStatdownloadAsync_ZipBody_StreamsFirstResponseOnce()
+        {
+            // Large-ish payload to ensure we never round-trip via string Content.
+            var payload = new byte[512 * 1024];
+            payload[0] = 0x50;
+            payload[1] = 0x4B;
+            payload[2] = 0x03;
+            payload[3] = 0x04;
+            new Random(42).NextBytes(payload.AsSpan(4));
+
+            var requestCount = 0;
+            var handler = new CaptureHandler((_, _) =>
+            {
+                requestCount++;
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(payload)
+                };
+                response.Content.Headers.ContentType =
+                    new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+                response.Content.Headers.ContentLength = payload.Length;
+                return response;
+            });
+
+            using var http = new HttpClient(handler);
+            using var client = BandcampNativeHttp.ForTests(http, LogManager.GetCurrentClassLogger());
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-probe-{Guid.NewGuid():N}.zip");
+            var reports = new System.Collections.Generic.List<(long Downloaded, long? Total)>();
+
+            try
+            {
+                var result = await client.ProbeOrStreamStatdownloadAsync(
+                    "https://popplers5.bandcamp.com/download/album?enc=flac&id=1&sig=abc&.format=flac&.json=true",
+                    "identity=test",
+                    archivePath,
+                    CancellationToken.None,
+                    (downloaded, total) => reports.Add((downloaded, total)));
+
+                Assert.Equal(1, requestCount); // one-shot — never probe-and-re-GET
+                Assert.True(result.StreamedToFile);
+                Assert.Null(result.Content);
+                Assert.Equal(payload.Length, new FileInfo(archivePath).Length);
+                Assert.Equal(payload, File.ReadAllBytes(archivePath));
+                Assert.True(reports.Count >= 2);
+                Assert.Equal(payload.Length, reports[^1].Downloaded);
+            }
+            finally
+            {
+                if (File.Exists(archivePath))
+                {
+                    File.Delete(archivePath);
+                }
+            }
+        }
+
+        [Fact]
+        public async Task ProbeOrStreamStatdownloadAsync_ZipMagicWithoutContentType_StreamsSameResponse()
+        {
+            var payload = new byte[] { 0x50, 0x4B, 0x03, 0x04, 0x0A, 0x0B, 0x0C, 0x0D };
+            var requestCount = 0;
+
+            var handler = new CaptureHandler((_, _) =>
+            {
+                requestCount++;
+                // No Content-Type — detect via ZIP local-file magic on the peek.
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(payload)
+                };
+            });
+
+            using var http = new HttpClient(handler);
+            using var client = BandcampNativeHttp.ForTests(http, LogManager.GetCurrentClassLogger());
+            var archivePath = Path.Combine(Path.GetTempPath(), $"bc-probe-{Guid.NewGuid():N}.zip");
+
+            try
+            {
+                var result = await client.ProbeOrStreamStatdownloadAsync(
+                    "https://bandcamp.com/statdownload/album/1?sig=abc&.format=flac&.json=true",
+                    "identity=test",
+                    archivePath);
+
+                Assert.Equal(1, requestCount);
+                Assert.True(result.StreamedToFile);
+                Assert.Equal(payload, File.ReadAllBytes(archivePath));
+            }
+            finally
+            {
+                if (File.Exists(archivePath))
+                {
+                    File.Delete(archivePath);
+                }
+            }
+        }
+
         private sealed class CaptureHandler : HttpMessageHandler
         {
             private readonly System.Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> _handler;
