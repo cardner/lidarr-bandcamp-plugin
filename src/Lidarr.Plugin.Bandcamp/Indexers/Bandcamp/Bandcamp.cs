@@ -569,7 +569,7 @@ namespace NzbDrone.Core.Indexers.Bandcamp
             return normalizedAlbum;
         }
 
-        internal static string NormalizeReleaseComponent(string? value)
+        public static string NormalizeReleaseComponent(string? value)
         {
             if (value.IsNullOrWhiteSpace())
             {

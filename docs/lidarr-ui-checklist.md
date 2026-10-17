@@ -110,12 +110,23 @@ Without this step, searches never grab Bandcamp results.
 2. Select **Bandcamp**
 3. Same **Identity Cookie** as indexer/download client
 4. Set root folder + quality / metadata profiles
-5. **Monitor:** **Specific Album** (recommended)
-6. Enable **Search for Missing Albums** / Search on Add
-7. **Test** → **Save**
-8. Optionally trigger **Refresh** on the list once to pull the current collection
+5. **Enable Automatic Add** — must be on
+6. **Monitor:** **Specific Album** (recommended; UI may default Entire Artist)
+7. **Search for New Items** — **must be on** or added albums won’t auto-search/download
+8. **Test** → **Save**
+9. Trigger **Refresh** on the list once
 
-New artists appear only after MusicBrainz can resolve the Bandcamp title. Pseudo-RSS (indexer Enable RSS) then grabs later purchases for already-monitored artists without waiting for the next list sync.
+### If purchases stay out of Lidarr
+
+| Symptom | Likely cause | What to do |
+| --- | --- | --- |
+| List sync “processed N items”, album still missing | SkyHook/MB 500 or no match (older builds aborted the whole sync on one 500) | Install build with Import List MB pre-resolve. Logs: `Bandcamp import list: candidates=… mapped=… skyhookErrors=…`. Retry later or **manual Add** |
+| Album in Lidarr, no download | Search for New Items off; Delay Profile; RSS off | Enable Search; enable Bandcamp protocol; Enable RSS on indexer |
+| Expecting RSS alone to add new artists | Pseudo-RSS only matches monitored library | Use Import List (or manual add) first |
+
+After a successful list add with Search on Add, Lidarr runs missing-album search for that artist — Bandcamp indexer must be enabled and the Bandcamp protocol must be on in Delay Profiles.
+
+New artists appear only after MusicBrainz can resolve the Bandcamp title. Pseudo-RSS then grabs later purchases for already-monitored artists.
 
 ---
 

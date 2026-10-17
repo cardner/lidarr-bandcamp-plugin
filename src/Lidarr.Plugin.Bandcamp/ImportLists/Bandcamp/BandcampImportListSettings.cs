@@ -23,7 +23,15 @@ namespace NzbDrone.Core.ImportLists.Bandcamp
             BaseUrl = "https://bandcamp.com";
         }
 
-        [FieldDefinition(0, Label = "Identity Cookie", Type = FieldType.Password, HelpText = BandcampIdentityAuth.FieldHelpText, Privacy = PrivacyLevel.Password)]
+        [FieldDefinition(
+            0,
+            Label = "Identity Cookie",
+            Type = FieldType.Password,
+            HelpText = BandcampIdentityAuth.FieldHelpText +
+                " List sync pre-resolves MusicBrainz IDs (skips SkyHook failures per album). " +
+                "Enable Automatic Add + Search for New Items, and Bandcamp in Delay Profiles. " +
+                "Indexer RSS will not add library albums by itself.",
+            Privacy = PrivacyLevel.Password)]
         public string Cookies { get; set; } = "";
 
         [FieldDefinition(1, Label = "Base URL", Type = FieldType.Url, HelpText = "Bandcamp base URL (unused for list fetch; kept for IImportListSettings)", Advanced = true)]
