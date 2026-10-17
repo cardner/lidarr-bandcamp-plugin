@@ -1,7 +1,14 @@
 name: Build and Release Plugin
 
-# Builds Lidarr.Plugin.Bandcamp and, on v* tags, publishes a GitHub Release
-# with Lidarr.Plugin.Bandcamp.net8.0.zip for Lidarr System → Plugins.
+# Builds Lidarr.Plugin.Bandcamp and publishes Lidarr.Plugin.Bandcamp.net8.0.zip
+# as a GitHub *Release* asset for System → Plugins.
+#
+# IMPORTANT:
+# - Lidarr installs from GitHub **Releases**, not from Actions artifact downloads.
+# - `actions/upload-artifact` always wraps downloads in an outer zip. Uploading a
+#   .zip as the artifact therefore produces zip-of-zip ("unsupported" in Lidarr).
+#   We upload the flat plugin *files* as the CI artifact instead.
+# - Push a `v*` tag (or use workflow_dispatch with version) to create/update the Release.
 #
 # Requires this workflow on the *GitHub* remote (Origin → GitHub mirror).
 # See docs/github-mirror.md.
@@ -15,7 +22,12 @@ on:
       - 'v*'
   pull_request:
   workflow_dispatch:
-  # Re-run publish when a Release is created manually for an existing tag
+    inputs:
+      version:
+        description: 'If set (e.g. 0.2.1), create/update GitHub Release v{version} with the flat plugin zip'
+        required: false
+        type: string
+        default: ''
   release:
     types: [published]
 
@@ -26,15 +38,8 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   PLUGIN_NAME: Lidarr.Plugin.Bandcamp
-  # SDK used to compile the net8.0 plugin (newer SDK is fine)
   DOTNET_VERSION: '8.0.x'
-  # AssemblyVersion pinned to a LOW major version for cross-version compatibility.
-  # Lidarr uses non-deterministic 10.0.0.* which changes every build. .NET's assembly
-  # binding requires an EXACT version match when the major version component is the same
-  # (10.x.x vs 10.x.x). By pinning to a different major version (2.0.0.0), .NET's
-  # PluginLoadContext falls through to the default AssemblyLoadContext which resolves
-  # Lidarr.Core by simple name regardless of version. This is the same approach used by
-  # Tubifarry (2.1.0.0), Deezer (3.0.0.4855), and other working Lidarr plugins.
+  # Pin Lidarr AssemblyVersion major away from 10.x so PluginLoadContext binding works.
   LIDARR_ASSEMBLY_VERSION: 2.0.0.0
 
 jobs:
@@ -57,11 +62,6 @@ jobs:
 
       - name: Pin Lidarr assembly versions
         run: |
-          # Pin Lidarr's non-deterministic AssemblyVersion (10.0.0.*) to a version with a
-          # DIFFERENT major component. .NET's PluginLoadContext falls through to the default
-          # ALC when it can't resolve the assembly. The default ALC has Lidarr.Core loaded at
-          # 10.0.0.XXXX. When our plugin references 2.0.0.0, .NET resolves by simple name
-          # (Lidarr.Core) without strict version matching because the major versions differ.
           sed -i'' -e "s/<AssemblyVersion>10\.0\.0\.\*<\/AssemblyVersion>/<AssemblyVersion>${{ env.LIDARR_ASSEMBLY_VERSION }}<\/AssemblyVersion>/g" ext/Lidarr/src/Directory.Build.props
           echo "Pinned Lidarr AssemblyVersion to ${{ env.LIDARR_ASSEMBLY_VERSION }}"
           grep AssemblyVersion ext/Lidarr/src/Directory.Build.props
@@ -69,14 +69,29 @@ jobs:
       - name: Resolve package version
         id: ver
         run: |
+          set -euo pipefail
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            VERSION="${GITHUB_REF_NAME#v}"
+            PUBLISH=1
+            TAG="$GITHUB_REF_NAME"
           elif [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
             TAG="${{ github.event.release.tag_name }}"
-            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+            VERSION="${TAG#v}"
+            PUBLISH=1
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+            VERSION="${VERSION#v}"
+            TAG="v${VERSION}"
+            PUBLISH=1
           else
-            echo "version=0.0.0-ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            VERSION="0.0.0-ci.${GITHUB_RUN_NUMBER}"
+            PUBLISH=0
+            TAG=""
           fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "publish=${PUBLISH}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=${VERSION} publish=${PUBLISH} tag=${TAG}"
 
       - name: Restore dependencies
         run: dotnet restore Lidarr.Plugin.Bandcamp.slnx -p:TreatWarningsAsErrors=false
@@ -94,10 +109,11 @@ jobs:
             -p:Version=${{ steps.ver.outputs.version }}
 
       - name: Package flat plugin zip
+        id: pkg
         run: |
-          # Lidarr extracts the zip into plugins/<owner>/<repo>/ and only loads
-          # Lidarr.Plugin.*.dll from that folder root (non-recursive). Entries MUST
-          # be flat: dll + deps.json (+ pdb). Never nest src/... paths or a zip-in-zip.
+          set -euo pipefail
+          # Lidarr extracts Release zip into plugins/<owner>/<repo>/ and only loads
+          # Lidarr.Plugin.*.dll from that folder root (non-recursive).
           OUT="src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0"
           STAGE="${{ github.workspace }}/artifacts/plugin"
           ZIP="${{ github.workspace }}/${{ env.PLUGIN_NAME }}.net8.0.zip"
@@ -113,39 +129,90 @@ jobs:
           unzip -l "$ZIP"
           unzip -Z1 "$ZIP" | grep -qx "${{ env.PLUGIN_NAME }}.dll"
           unzip -Z1 "$ZIP" | grep -qx "${{ env.PLUGIN_NAME }}.deps.json"
-          # Fail if anything is nested (would break Lidarr discovery)
           if unzip -Z1 "$ZIP" | grep -E '/'; then
             echo "ERROR: zip contains nested paths — Lidarr will not load the DLL" >&2
             exit 1
           fi
+          echo "zip=${ZIP}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload build artifacts
+      # Upload LOOSE files (not the .zip). Actions always wraps artifact downloads in an
+      # outer zip — if we uploaded the .zip, users get zip-of-zip and Lidarr rejects it.
+      - name: Upload CI artifact (flat plugin files)
         uses: actions/upload-artifact@v7
         with:
-          # Single flat zip only — uploading the DLL with its src/... path alongside
-          # caused users to re-upload a nested Actions artifact as the Release asset.
-          name: ${{ env.PLUGIN_NAME }}.net8.0
-          path: ${{ env.PLUGIN_NAME }}.net8.0.zip
+          name: ${{ env.PLUGIN_NAME }}-files
+          path: |
+            artifacts/plugin/${{ env.PLUGIN_NAME }}.dll
+            artifacts/plugin/${{ env.PLUGIN_NAME }}.deps.json
+            artifacts/plugin/${{ env.PLUGIN_NAME }}.pdb
+          if-no-files-found: error
 
-      - name: Generate changelog
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+      - name: Job summary
         run: |
-          echo "## Changelog" > changelog.txt
-          git log --oneline "$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")"..HEAD | \
-            awk '{print "- " substr($0, index($0,$2))}' >> changelog.txt || true
-          cat changelog.txt
+          {
+            echo "## Lidarr Bandcamp plugin package"
+            echo ""
+            echo "- Version: \`${{ steps.ver.outputs.version }}\`"
+            echo "- Flat Release zip (for Lidarr GitHub install): \`${{ env.PLUGIN_NAME }}.net8.0.zip\`"
+            echo "- CI artifact \`${{ env.PLUGIN_NAME }}-files\`: dll + deps.json + pdb (NOT a zip-of-zip)"
+            echo ""
+            echo "### Lidarr install"
+            echo "Use the **GitHub Release** asset after a \`v*\` tag (or workflow_dispatch with version)."
+            echo "Do **not** feed an Actions/Origin CI download zip to Lidarr as the plugin package."
+            echo ""
+            echo '```'
+            unzip -l "${{ env.PLUGIN_NAME }}.net8.0.zip"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      # Creates the Release on tag push, or uploads/updates assets when a Release
-      # already exists for that tag (softprops updates in place).
-      - name: Publish GitHub Release zip
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
-          generate_release_notes: true
-          body_path: changelog.txt
-          draft: false
-          prerelease: false
-          fail_on_unmatched_files: true
-          files: |
-            ${{ env.PLUGIN_NAME }}.net8.0.zip
+      - name: Publish GitHub Release (flat net8.0.zip)
+        if: steps.ver.outputs.publish == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          ZIP: ${{ env.PLUGIN_NAME }}.net8.0.zip
+        run: |
+          set -euo pipefail
+          test -f "$ZIP"
+          test -n "$TAG"
+
+          # workflow_dispatch may need to create the tag on this repo
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if ! git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git tag -a "$TAG" -m "Lidarr Bandcamp Library plugin ${TAG}"
+              git push origin "refs/tags/${TAG}"
+            fi
+          fi
+
+          NOTES="$(mktemp)"
+          {
+            echo "## ${TAG}"
+            echo ""
+            echo "Flat Lidarr plugin package (\`${ZIP}\`):"
+            echo "- \`${{ env.PLUGIN_NAME }}.dll\`"
+            echo "- \`${{ env.PLUGIN_NAME }}.deps.json\`"
+            echo "- \`${{ env.PLUGIN_NAME }}.pdb\`"
+            echo ""
+            echo "Install in Lidarr: **System → Plugins** → \`https://github.com/${{ github.repository }}\`"
+          } > "$NOTES"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Updating existing release ${TAG}…"
+            gh release upload "$TAG" "$ZIP" --clobber
+            gh release edit "$TAG" --notes-file "$NOTES" || true
+          else
+            echo "Creating release ${TAG}…"
+            gh release create "$TAG" "$ZIP" \
+              --title "$TAG" \
+              --notes-file "$NOTES" \
+              --latest
+          fi
+
+          echo "Release assets:"
+          gh release view "$TAG" --json assets --jq '.assets[].name'
+          # Must include the exact Lidarr filter suffix
+          gh release view "$TAG" --json assets --jq '.assets[].name' \
+            | grep -F 'net8.0.zip' \
+            || { echo "ERROR: Release missing *net8.0.zip asset"; exit 1; }

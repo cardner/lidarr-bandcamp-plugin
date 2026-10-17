@@ -19,9 +19,11 @@ dotnet test Lidarr.Plugin.Bandcamp.slnx -c Release --filter "FullyQualifiedName~
 Or: `./scripts/build-plugin.sh` (stages dll + deps.json + pdb → `artifacts/plugin/`).  
 Release zip: `./scripts/build-plugin.sh --zip --version 0.2.1` → flat `artifacts/Lidarr.Plugin.Bandcamp.net8.0.zip`.
 
-The zip **must** have `Lidarr.Plugin.Bandcamp.dll` and `.deps.json` at the archive root (Lidarr discovery is non-recursive). Do not re-upload a multi-file Actions artifact as the Release asset. See `docs/github-mirror.md`.
+The zip **must** have `Lidarr.Plugin.Bandcamp.dll` and `.deps.json` at the archive root (Lidarr discovery is non-recursive).
 
-Tagged releases on the **GitHub** mirror are published by `.github/workflows/build.yml`. Do not commit `ext/Lidarr` (gitignored).
+**Lidarr installs from GitHub Releases**, not from CI artifact downloads (those are outer-zip wrappers and become zip-of-zip if a `.zip` was uploaded). Push `v*` to the GitHub mirror (or `workflow_dispatch` with `version`) so Actions attaches `Lidarr.Plugin.Bandcamp.net8.0.zip` to the Release. See `docs/github-mirror.md`.
+
+Do not commit `ext/Lidarr` (gitignored).
 
 ## PRs
 
