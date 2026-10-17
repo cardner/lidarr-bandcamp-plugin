@@ -197,12 +197,12 @@ namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
             Assert.Contains("[WEB]", title);
             Assert.Contains("[FLAC]", title);
 
-            // Verify format: Artist - Album [WEB] [Format]
+            // Verify format: Artist - Album [Format] [WEB]
             var parts = title.Split(" - ");
             Assert.Equal(2, parts.Length); // Artist and Album section
             Assert.StartsWith("Test Artist", parts[0]);
             Assert.Contains("Test Album", parts[1]);
-            Assert.Contains("[WEB] [FLAC]", parts[1]);
+            Assert.Contains("[FLAC] [WEB]", parts[1]);
 
             Assert.Equal(new DateTime(2023, 12, 1), results[0].PublishDate.Date);
         }
