@@ -6,6 +6,7 @@ using FluentValidation.Results;
 using NLog;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Http;
+using NzbDrone.Core.Auth.Bandcamp;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Indexers;
 using NzbDrone.Core.Localization;
@@ -185,18 +186,15 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         {
             _logger.Debug("Bandcamp download client: Running connection test");
 
-            // Test cookie auth — resolve fan_id to verify cookies are valid
+            // Test cookie auth — shape check + fan_id probe with actionable messages
             try
             {
-                var fanId = _apiClient.ResolveFanIdAsync(Settings.Cookies).GetAwaiter().GetResult();
+                var probe = _apiClient.ProbeAuthAsync(Settings.Cookies).GetAwaiter().GetResult();
 
-                if (fanId == null)
+                if (!probe.Success)
                 {
-                    failures.Add(new ValidationFailure("Cookies",
-                        "Could not verify session cookies. Make sure you're pasting the 'identity' cookie " +
-                        "value from your browser's Bandcamp cookies (not the full cookie header). " +
-                        "The cookie value should be a long string starting with '%22' or containing 't%3D'."));
-                    _logger.Debug("Bandcamp download client: Cookie auth test failed — fan_id could not be resolved");
+                    failures.Add(new ValidationFailure("Cookies", probe.Message));
+                    _logger.Debug("Bandcamp download client: Cookie auth test failed — {0}", probe.FailureKind);
                 }
                 else
                 {
@@ -205,8 +203,9 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             }
             catch (Exception ex)
             {
+                // Keep User-Agent failures readable if anything still hits Lidarr's dispatcher.
                 failures.Add(new ValidationFailure("Cookies",
-                    "Failed to authenticate with Bandcamp: " + ex.Message));
+                    BandcampIdentityAuth.DescribeFailure(BandcampAuthFailureKind.NetworkError, ex.Message)));
                 _logger.Debug(ex, "Bandcamp download client: Cookie auth test threw exception");
             }
 

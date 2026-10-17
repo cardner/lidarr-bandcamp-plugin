@@ -33,7 +33,26 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
 
             Assert.False(result.IsValid);
             Assert.Contains(result.Errors, e => e.PropertyName == "Cookies");
-            Assert.Contains(result.Errors, e => e.ErrorMessage.Contains("identity cookie is required"));
+            Assert.Contains(result.Errors, e =>
+                e.ErrorMessage.Contains("required", System.StringComparison.OrdinalIgnoreCase) ||
+                e.ErrorMessage.Contains("Identity Cookie", System.StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void Validate_PlaceholderCookie_ReturnsShapeError()
+        {
+            var settings = new BandcampDownloadSettings
+            {
+                Cookies = "placeholder",
+                DownloadPath = "/tmp/bandcamp-downloads"
+            };
+
+            var result = settings.Validate();
+
+            Assert.False(result.IsValid);
+            Assert.Contains(result.Errors, e => e.PropertyName == "Cookies");
+            Assert.Contains(result.Errors, e =>
+                e.ErrorMessage.Contains("placeholder", System.StringComparison.OrdinalIgnoreCase));
         }
 
         [Fact]

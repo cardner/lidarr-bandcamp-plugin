@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NLog;
 using NzbDrone.Common.Http;
+using NzbDrone.Core.Auth.Bandcamp;
 using NzbDrone.Core.Http.Bandcamp;
 using NzbDrone.Core.MediaFiles;
 
@@ -49,10 +50,17 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             if (string.IsNullOrWhiteSpace(item.Cookies))
             {
                 throw new DownloadException(
-                    "Cannot execute download: session cookies are not set on the download item.");
+                    "Cannot execute download: Identity Cookie is not set on the download item. " +
+                    BandcampIdentityAuth.RefreshGuidance);
             }
 
-            var cookies = item.Cookies!;
+            var shape = BandcampIdentityAuth.ValidateShape(item.Cookies);
+            if (!shape.IsValid)
+            {
+                throw new DownloadException(shape.Message);
+            }
+
+            var cookies = shape.NormalizedCookieHeader;
             var requestedFormat = ExtractFormatFragment(item.AlbumUrl);
             var lookupUrl = NormalizeUrl(StripFragment(item.AlbumUrl));
 
@@ -60,12 +68,13 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             item.Phase = "fan_id_resolution";
             _logger.Debug("Bandcamp download proxy [{0}]: Phase 1 — Resolving fan_id", item.DownloadId);
 
-            var fanId = await _apiClient.ResolveFanIdAsync(cookies).ConfigureAwait(false);
-            if (fanId == null)
+            var probe = await _apiClient.ProbeAuthAsync(cookies).ConfigureAwait(false);
+            if (!probe.Success || probe.FanId == null)
             {
-                throw new DownloadException(
-                    "Failed to resolve Bandcamp fan_id. Session cookies may be invalid or expired.");
+                throw new DownloadException(probe.Message);
             }
+
+            var fanId = probe.FanId;
 
             _logger.Trace("Bandcamp download proxy [{0}]: Resolved fan_id {1}", item.DownloadId, fanId);
 

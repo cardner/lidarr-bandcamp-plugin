@@ -13,5 +13,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Lidarr.Plugin.Bandcamp.Test/Lidarr.Plugin.Bandcamp.Test.csproj" />
+    <Project Path="tests/Lidarr.Plugin.Bandcamp.ConsoleHarness/Lidarr.Plugin.Bandcamp.ConsoleHarness.csproj" />
   </Folder>
 </Solution>

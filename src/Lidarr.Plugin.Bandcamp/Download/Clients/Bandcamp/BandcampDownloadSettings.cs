@@ -1,6 +1,7 @@
 using FluentValidation;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Annotations;
+using NzbDrone.Core.Auth.Bandcamp;
 using NzbDrone.Core.ThingiProvider;
 using NzbDrone.Core.Validation;
 using NzbDrone.Core.Validation.Paths;
@@ -11,8 +12,7 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
     {
         public BandcampDownloadSettingsValidator()
         {
-            RuleFor(c => c.Cookies).NotEmpty()
-                .WithMessage("Bandcamp identity cookie is required to download purchased albums");
+            RuleFor(c => c.Cookies).ValidBandcampIdentityCookie();
 
             RuleFor(c => c.DownloadPath).NotEmpty()
                 .WithMessage("Download path is required");
@@ -32,7 +32,7 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             Cookies = "";
         }
 
-        [FieldDefinition(0, Label = "Identity Cookie", Type = FieldType.Password, HelpText = "Same Bandcamp 'identity' cookie as the indexer. Paste the bare value or a full Cookie header. Re-export from your browser when auth fails.", Privacy = PrivacyLevel.Password)]
+        [FieldDefinition(0, Label = "Identity Cookie", Type = FieldType.Password, HelpText = BandcampIdentityAuth.DownloadFieldHelpText, Privacy = PrivacyLevel.Password)]
         public string Cookies { get; set; }
 
         [FieldDefinition(1, Label = "Download Path", Type = FieldType.Path, HelpText = "Directory where Bandcamp downloads will be saved before Lidarr imports them (must be writable by Lidarr)")]

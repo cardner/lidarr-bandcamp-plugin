@@ -1,5 +1,6 @@
 using FluentValidation;
 using NzbDrone.Core.Annotations;
+using NzbDrone.Core.Auth.Bandcamp;
 using NzbDrone.Core.Indexers;
 using NzbDrone.Core.Validation;
 
@@ -10,9 +11,7 @@ namespace NzbDrone.Core.Indexers.Bandcamp
         public BandcampIndexerSettingsValidator()
         {
             RuleFor(c => c.BaseUrl).ValidRootUrl();
-            RuleFor(c => c.Cookies).NotEmpty()
-                .When(c => !string.IsNullOrWhiteSpace(c.BaseUrl))
-                .WithMessage("Bandcamp identity cookie is required to search your purchase library");
+            RuleFor(c => c.Cookies).ValidBandcampIdentityCookie();
         }
     }
 
@@ -25,7 +24,7 @@ namespace NzbDrone.Core.Indexers.Bandcamp
             BaseUrl = "https://bandcamp.com";
         }
 
-        [FieldDefinition(0, Label = "Identity Cookie", Type = FieldType.Password, HelpText = "Paste only the Bandcamp 'identity' cookie value (or the full Cookie header). Chrome: DevTools → Application → Cookies → https://bandcamp.com → identity. Firefox: Storage → Cookies. Bare values are accepted; no need to type identity=.", Privacy = PrivacyLevel.Password)]
+        [FieldDefinition(0, Label = "Identity Cookie", Type = FieldType.Password, HelpText = BandcampIdentityAuth.FieldHelpText, Privacy = PrivacyLevel.Password)]
         public string Cookies { get; set; } = "";
 
         [FieldDefinition(1, Label = "Base URL", Type = FieldType.Url, HelpText = "Bandcamp base URL", Advanced = true)]
