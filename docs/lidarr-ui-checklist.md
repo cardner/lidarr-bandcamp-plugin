@@ -71,12 +71,13 @@ Only after the **public GitHub mirror** has a release zip (Origin alone is not e
 2. Under **Other**, select **Bandcamp** (implementation `BandcampIndexer`)
 3. **Name:** e.g. `Bandcamp Library`
 4. **Identity Cookie:** paste bare `identity` value (or `identity=…`)
-5. Click **Test**
+5. Enable **RSS** (polls recent Bandcamp purchases by purchase date)
+6. Click **Test**
    - Success: green check (cookie valid + ≥1 downloadable purchase)
    - Failure examples:
      - placeholder / too short → shape error (fix cookie paste)
      - expired / 401 / 403 / challenge → re-export cookie from browser
-6. **Save**
+7. **Save**
 
 ---
 
@@ -100,6 +101,21 @@ Only after the **public GitHub mirror** has a release zip (Origin alone is not e
 5. **Save**
 
 Without this step, searches never grab Bandcamp results.
+
+---
+
+## E2. Add Import List (new purchases → Lidarr library)
+
+1. **Settings → Import Lists → +**
+2. Select **Bandcamp**
+3. Same **Identity Cookie** as indexer/download client
+4. Set root folder + quality / metadata profiles
+5. **Monitor:** **Specific Album** (recommended)
+6. Enable **Search for Missing Albums** / Search on Add
+7. **Test** → **Save**
+8. Optionally trigger **Refresh** on the list once to pull the current collection
+
+New artists appear only after MusicBrainz can resolve the Bandcamp title. Pseudo-RSS (indexer Enable RSS) then grabs later purchases for already-monitored artists without waiting for the next list sync.
 
 ---
 

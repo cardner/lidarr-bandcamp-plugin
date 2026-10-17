@@ -575,12 +575,13 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
                         ""band_id"": 200,
                         ""sale_item_type"": ""a"",
                         ""sale_item_id"": 555,
-                        ""token"": ""abc123"",
+                        ""token"": ""1700000000:555:a:0:"",
                         ""item_url"": ""https://fresh.bandcamp.com/album/fresh"",
                         ""item_title"": ""Fresh"",
                         ""band_name"": ""Fresh"",
                         ""num_tracks"": 8,
-                        ""release_date"": ""2024-01-02T00:00:00Z""
+                        ""release_date"": ""2024-01-02T00:00:00Z"",
+                        ""purchased"": ""15 Nov 2023 12:00:00 GMT""
                     },
                     {
                         ""item_id"": 777,
@@ -607,6 +608,10 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
 
             var downloadable = items[0];
             Assert.Equal("a", downloadable.SaleItemType);
+            Assert.Equal("15 Nov 2023 12:00:00 GMT", downloadable.Purchased);
+            var purchasedUtc = downloadable.GetPurchaseDateUtc();
+            Assert.NotNull(purchasedUtc);
+            Assert.Equal(new DateTime(2023, 11, 15, 12, 0, 0, DateTimeKind.Utc), purchasedUtc!.Value.ToUniversalTime());
             Assert.Equal(555, downloadable.SaleItemId);
             Assert.Equal("https://bandcamp.com/download?type=album&id=555", downloadable.DownloadPageUrl);
             Assert.Equal(8, downloadable.TrackCount);

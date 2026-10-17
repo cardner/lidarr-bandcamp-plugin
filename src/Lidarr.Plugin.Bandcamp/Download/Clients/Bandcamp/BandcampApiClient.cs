@@ -803,6 +803,12 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                         collectionItem.ReleaseDate = itemReleaseDate.GetString();
                     }
 
+                    // Purchase time (fan bought the item) — used for RSS watermarks / Import List ordering.
+                    if (item.TryGetProperty("purchased", out var purchased))
+                    {
+                        collectionItem.Purchased = purchased.GetString();
+                    }
+
                     if (!string.IsNullOrWhiteSpace(collectionItem.SaleItemType) && collectionItem.SaleItemId > 0)
                     {
                         var redownloadKey = $"{collectionItem.SaleItemType}{collectionItem.SaleItemId}";
@@ -971,7 +977,36 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         public string? BandName { get; set; }
         public int TrackCount { get; set; }
         public string? ReleaseDate { get; set; }
+
+        /// <summary>
+        /// When the fan purchased this item (Bandcamp <c>purchased</c> field), e.g. "06 Feb 2017 02:16:28 GMT".
+        /// </summary>
+        public string? Purchased { get; set; }
+
         public bool IsDownloadable => !string.IsNullOrWhiteSpace(DownloadPageUrl);
+
+        /// <summary>
+        /// UTC purchase time from <see cref="Purchased"/>, else the unix timestamp in <see cref="Token"/>.
+        /// </summary>
+        public DateTime? GetPurchaseDateUtc()
+        {
+            if (!string.IsNullOrWhiteSpace(Purchased) &&
+                DateTime.TryParse(Purchased, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal, out var parsed))
+            {
+                return parsed.ToUniversalTime();
+            }
+
+            if (!string.IsNullOrWhiteSpace(Token))
+            {
+                var first = Token.Split(':')[0];
+                if (long.TryParse(first, NumberStyles.Integer, CultureInfo.InvariantCulture, out var unix) && unix > 1_000_000_000L)
+                {
+                    return DateTimeOffset.FromUnixTimeSeconds(unix).UtcDateTime;
+                }
+            }
+
+            return null;
+        }
     }
 
     /// <summary>

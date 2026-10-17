@@ -1,6 +1,6 @@
 # Lidarr Bandcamp Library Plugin
 
-Indexer + download client for **music you already bought on Bandcamp**.
+Indexer + download client + Import List for **music you already bought on Bandcamp**.
 
 Lidarr searches your authenticated purchase library and can download owned releases that are not yet in your Lidarr library. It does **not** search or download the public Bandcamp catalog.
 
@@ -12,6 +12,8 @@ Requires Lidarr **3.1.2.4938+** on the `develop`, `nightly`, or `plugins` branch
 | --- | --- |
 | Auth | Browser `identity` cookie (single **Identity Cookie** field; bare value OK) |
 | Index / search | Paginated fan collection (`collection_summary` + `collection_items`) |
+| Import List | Album-level purchases → Lidarr library (MusicBrainz resolve) |
+| Pseudo-RSS | Enable RSS on the indexer — polls recent purchases by **purchase** date |
 | Download | Redownload page → preferred format (FLAC when available) → Lidarr import path |
 | User-Agent | Bandcamp calls use a browser-like UA via a dedicated path / dispatcher so Lidarr does **not** throw `User-Agent other than Lidarr not allowed` |
 
@@ -51,7 +53,7 @@ Bandcamp does **not** offer fan OAuth for personal libraries. The only credentia
 2. Open DevTools (`F12`)
    - **Chrome:** Application → Cookies → `https://bandcamp.com` → copy **`identity`**
    - **Firefox:** Storage → Cookies → `https://bandcamp.com` → copy **`identity`**
-3. Paste into the plugin’s **Identity Cookie** field (indexer and download client)
+3. Paste into the plugin’s **Identity Cookie** field (indexer, download client, and Import List)
    - Bare value is preferred (e.g. `a1B2c3…`)
    - Or paste `identity=…` / a full Cookie header
 4. Click **Test** — errors now distinguish missing/wrong-shape cookies, expired sessions, bot challenges, and HTTP 401/403, and tell you to re-export
@@ -72,6 +74,7 @@ Local helpers: `./scripts/build-plugin.sh`, `./scripts/run-lidarr-local.sh`, `do
 **Settings → Indexers → + → Bandcamp** (or **Bandcamp Library**)
 
 - Paste **Identity Cookie**
+- Enable **RSS** (pseudo-feed of recent purchases)
 - **Test**, then **Save**
 
 ### 2. Download client
@@ -83,7 +86,19 @@ Local helpers: `./scripts/build-plugin.sh`, `./scripts/run-lidarr-local.sh`, `do
   - Docker linuxserver/hotio: the volume is usually mounted at **`/downloads`** — use `/downloads/bandcamp`, not `/downloads/downloads` unless that nested folder exists on purpose. Details: [docs/docker-download-path.md](docs/docker-download-path.md)
 - **Test**, then **Save** (Test creates the folder if needed and fails clearly when it is not writable)
 
-### 3. Delay profile (required)
+### 3. Import List (new artists / albums from purchases)
+
+**Settings → Import Lists → + → Bandcamp**
+
+- Same **Identity Cookie**
+- Root folder + quality / metadata profiles as usual
+- **Monitor:** prefer **Specific Album** (only what you bought)
+- Enable **Search on Add** so Lidarr grabs via the Bandcamp indexer after MusicBrainz resolve
+- **Test**, then **Save**
+
+List sync is intentionally slow (≥ 6h). Bandcamp-only releases with no MusicBrainz match will not auto-add.
+
+### 4. Delay profile (required)
 
 **Settings → Profiles → Delay Profiles** → edit the profile → enable the **Bandcamp** protocol → Save.
 
@@ -109,7 +124,8 @@ FLAC, ALAC, WAV, AIFF, MP3 V0, MP3 320, OGG Vorbis, AAC — Lidarr picks from yo
 | Auth / Test fails | Re-export `identity` from a logged-in browser session |
 | Search returns nothing | Confirm the album is in your Bandcamp collection and the Bandcamp protocol is enabled in Delay Profiles |
 | Queue: Download Failed (empty / path) | Check Download Path; Docker often needs `/downloads/bandcamp` not `/downloads/downloads`. See [docs/docker-download-path.md](docs/docker-download-path.md) |
-| RSS not supported | Intentional — Bandcamp library indexing is search-only (`SupportsRss=false`); no fan purchase RSS feed |
+| New purchase not grabbed | Enable indexer **RSS**; ensure artist/album is in Lidarr (Import List or manual). Pseudo-RSS only matches monitored library items. |
+| Import List adds nothing | MusicBrainz could not map the Bandcamp title — add the artist manually or fix MB metadata |
 | Plugin missing | Lidarr must be ≥ 3.1.2.4938 on develop/nightly/plugins; restart after install |
 
 ## Development

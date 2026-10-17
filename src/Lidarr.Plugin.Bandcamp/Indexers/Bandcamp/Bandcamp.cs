@@ -32,12 +32,18 @@ namespace NzbDrone.Core.Indexers.Bandcamp
 
         public override string Name => "Bandcamp";
         public override string Protocol => nameof(BandcampDownloadProtocol);
-        // Intentional: library indexing uses authenticated collection search only.
-        // Bandcamp has no fan RSS feed for purchases; enabling RSS would poll an empty/unsupported path.
-        public override bool SupportsRss => false;
+
+        /// <summary>
+        /// Pseudo-RSS: polls authenticated collection_items (newest purchases first).
+        /// There is no Bandcamp fan purchase RSS URL; Enable RSS uses <see cref="FetchRecent"/>.
+        /// </summary>
+        public override bool SupportsRss => true;
         public override bool SupportsSearch => true;
         public override int PageSize => 50;
         public override TimeSpan RateLimit => TimeSpan.FromSeconds(2);
+
+        /// <summary>Max collection items to expand into releases per RSS sync (download-page cost).</summary>
+        private const int RssMaxCollectionItems = 25;
 
         public BandcampIndexer(IHttpClient httpClient,
                                BandcampApiClient apiClient,
@@ -60,9 +66,79 @@ namespace NzbDrone.Core.Indexers.Bandcamp
             return new BandcampParser(Settings, _logger);
         }
 
-        public override Task<IList<ReleaseInfo>> FetchRecent()
+        /// <summary>
+        /// Recent purchases feed for Lidarr RSS sync. PublishDate is purchase time so new buys of
+        /// old albums still surface above the RSS watermark.
+        /// </summary>
+        public override async Task<IList<ReleaseInfo>> FetchRecent()
         {
-            return Task.FromResult<IList<ReleaseInfo>>(Array.Empty<ReleaseInfo>());
+            if (!SupportsRss)
+            {
+                return Array.Empty<ReleaseInfo>();
+            }
+
+            try
+            {
+                var fanId = await _apiClient.ResolveFanIdAsync(Settings.Cookies).ConfigureAwait(false);
+                if (fanId == null)
+                {
+                    _logger.Debug("Bandcamp indexer RSS: Cannot resolve fan_id");
+                    return Array.Empty<ReleaseInfo>();
+                }
+
+                var lastReleaseInfo = _indexerStatusService.GetLastRssSyncReleaseInfo(Definition.Id);
+
+                // One page is enough for incremental purchase detection; first sync also uses one page.
+                var collection = await _apiClient.GetDownloadableCollectionAsync(Settings.Cookies, fanId.Value, maxPages: 1)
+                    .ConfigureAwait(false);
+
+                var uniqueItems = collection
+                    .GroupBy(GetCollectionIdentity, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group
+                        .OrderByDescending(item => !string.IsNullOrWhiteSpace(item.DownloadPageUrl))
+                        .ThenByDescending(item => item.ItemId)
+                        .First())
+                    .OrderByDescending(GetEffectivePurchaseDate)
+                    .ToList();
+
+                var recentItems = SelectRecentPurchaseItems(uniqueItems, lastReleaseInfo);
+
+                _logger.Debug(
+                    "Bandcamp indexer RSS: {0} unique purchase(s) on page; expanding {1} for releases",
+                    uniqueItems.Count,
+                    recentItems.Count);
+
+                var results = new List<ReleaseInfo>();
+                foreach (var item in recentItems)
+                {
+                    var releases = await BuildReleaseInfosForCollectionItem(item, usePurchaseDateForPublish: true)
+                        .ConfigureAwait(false);
+                    foreach (var release in releases)
+                    {
+                        if (results.All(existing => !string.Equals(existing.Guid, release.Guid, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            results.Add(release);
+                        }
+                    }
+                }
+
+                var cleaned = CleanupReleases(results, isRecent: true);
+
+                if (!cleaned.Empty())
+                {
+                    var newest = cleaned.OrderByDescending(r => r.PublishDate).First();
+                    _indexerStatusService.UpdateRssSyncStatus(Definition.Id, newest);
+                }
+
+                _indexerStatusService.RecordSuccess(Definition.Id);
+                return cleaned;
+            }
+            catch (Exception ex)
+            {
+                _indexerStatusService.RecordFailure(Definition.Id);
+                _logger.Warn(ex, "Bandcamp indexer RSS sync failed");
+                return Array.Empty<ReleaseInfo>();
+            }
         }
 
         public override async Task<IList<ReleaseInfo>> Fetch(AlbumSearchCriteria searchCriteria)
@@ -92,9 +168,8 @@ namespace NzbDrone.Core.Indexers.Bandcamp
         }
 
         /// <summary>
-        /// Bandcamp is search-only and intentionally has no RSS/recent feed.
-        /// Validate by proving the configured identity cookie can load at least one
-        /// downloadable collection item instead of probing a nonexistent RSS URL.
+        /// Validate by proving the identity cookie can load at least one downloadable
+        /// collection item (same path search and pseudo-RSS use). Do not probe GetRecentRequests.
         /// </summary>
         protected override async Task<ValidationFailure> TestConnection()
         {
@@ -212,7 +287,10 @@ namespace NzbDrone.Core.Indexers.Bandcamp
             return results;
         }
 
-        private async Task<List<ReleaseInfo>> BuildReleaseInfosForCollectionItem(BandcampCollectionItem item, HashSet<int>? expectedTrackCounts = null)
+        private async Task<List<ReleaseInfo>> BuildReleaseInfosForCollectionItem(
+            BandcampCollectionItem item,
+            HashSet<int>? expectedTrackCounts = null,
+            bool usePurchaseDateForPublish = false)
         {
             var releases = new List<ReleaseInfo>();
 
@@ -257,19 +335,27 @@ namespace NzbDrone.Core.Indexers.Bandcamp
                         item.BandName, item.Title, format.Key, size);
                 }
 
-                releases.Add(ToReleaseInfo(item, format.Key, size, albumDurationSeconds, expectedTrackCounts));
+                releases.Add(ToReleaseInfo(item, format.Key, size, albumDurationSeconds, expectedTrackCounts, usePurchaseDateForPublish));
             }
 
             return releases;
         }
 
-        private ReleaseInfo ToReleaseInfo(BandcampCollectionItem item, string formatKey, long size, double? albumDurationSeconds, HashSet<int>? expectedTrackCounts = null)
+        private ReleaseInfo ToReleaseInfo(
+            BandcampCollectionItem item,
+            string formatKey,
+            long size,
+            double? albumDurationSeconds,
+            HashSet<int>? expectedTrackCounts = null,
+            bool usePurchaseDateForPublish = false)
         {
             var artistName = item.BandName ?? "Unknown Artist";
             var albumTitle = item.Title ?? "Unknown Album";
             var formatLabel = FormatLabel(formatKey, size, albumDurationSeconds);
             var title = BuildReleaseTitle(artistName, albumTitle, formatLabel, item.TrackCount, expectedTrackCounts);
-            var publishDate = ParsePublishDate(item.ReleaseDate);
+            var publishDate = usePurchaseDateForPublish
+                ? GetEffectivePurchaseDate(item)
+                : ParsePublishDate(item.ReleaseDate);
             var downloadUrl = AddFormatFragment(item.DownloadPageUrl!, formatKey);
 
             return new ReleaseInfo
@@ -394,6 +480,47 @@ namespace NzbDrone.Core.Indexers.Bandcamp
 
             return value.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                    query.Contains(value, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static List<BandcampCollectionItem> SelectRecentPurchaseItems(
+            List<BandcampCollectionItem> newestFirst,
+            ReleaseInfo? lastReleaseInfo)
+        {
+            if (newestFirst.Count == 0)
+            {
+                return newestFirst;
+            }
+
+            // First RSS sync: only the newest page slice (matches HttpIndexerBase first-page behavior).
+            if (lastReleaseInfo == null)
+            {
+                return newestFirst.Take(RssMaxCollectionItems).ToList();
+            }
+
+            var selected = new List<BandcampCollectionItem>();
+            foreach (var item in newestFirst)
+            {
+                var purchaseDate = GetEffectivePurchaseDate(item);
+
+                if (purchaseDate < lastReleaseInfo.PublishDate)
+                {
+                    break;
+                }
+
+                selected.Add(item);
+
+                if (selected.Count >= RssMaxCollectionItems)
+                {
+                    break;
+                }
+            }
+
+            return selected;
+        }
+
+        private static DateTime GetEffectivePurchaseDate(BandcampCollectionItem item)
+        {
+            return item.GetPurchaseDateUtc() ?? ParsePublishDate(item.ReleaseDate);
         }
 
         private static DateTime ParsePublishDate(string? releaseDate)
