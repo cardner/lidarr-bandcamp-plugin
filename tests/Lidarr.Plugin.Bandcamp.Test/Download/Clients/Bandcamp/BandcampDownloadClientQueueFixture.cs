@@ -27,7 +27,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
         {
             var logger = LogManager.GetCurrentClassLogger();
             var httpClient = new Mock<IHttpClient>();
-            var apiClient = new BandcampApiClient(new BandcampHttpClient(httpClient.Object, logger), logger);
+            var apiClient = new BandcampApiClient(BandcampHttpClient.ForTests(httpClient.Object, logger), logger);
             var registry = new BandcampDownloadRegistry();
             var proxy = new BlockingProxy();
             using var queue = new DownloadTaskQueue(proxy, registry, logger);
@@ -94,7 +94,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
         {
             var logger = LogManager.GetCurrentClassLogger();
             var httpClient = new Mock<IHttpClient>();
-            var apiClient = new BandcampApiClient(new BandcampHttpClient(httpClient.Object, logger), logger);
+            var apiClient = new BandcampApiClient(BandcampHttpClient.ForTests(httpClient.Object, logger), logger);
             var registry = new BandcampDownloadRegistry();
             var proxy = new BlockingProxy();
             using var queue = new DownloadTaskQueue(proxy, registry, logger);
@@ -143,6 +143,82 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
         }
 
         [Fact]
+        public async Task GetItems_ReportsProgressRemainingTimeAndPhaseMessage()
+        {
+            var logger = LogManager.GetCurrentClassLogger();
+            var httpClient = new Mock<IHttpClient>();
+            var apiClient = new BandcampApiClient(BandcampHttpClient.ForTests(httpClient.Object, logger), logger);
+            var registry = new BandcampDownloadRegistry();
+            var proxy = new BlockingProxy();
+            using var queue = new DownloadTaskQueue(proxy, registry, logger);
+
+            var client = CreateClient(queue, apiClient, logger);
+
+            var item = new BandcampDownloadItem
+            {
+                DownloadId = "progress1",
+                Title = "Chris Bullock - Boomtown",
+                AlbumUrl = "https://bandcamp.com/download?id=1",
+                OutputPath = "/tmp/bandcamp/album",
+                Cookies = "identity=x",
+                Status = BandcampDownloadStatus.Downloading,
+                Phase = "file_download",
+                TotalSize = 1000,
+                DownloadedBytes = 250,
+                Progress = 0.25,
+                DownloadStartedAt = DateTime.UtcNow.AddSeconds(-10),
+                QueuedAt = DateTime.UtcNow.AddSeconds(-15)
+            };
+            registry.Upsert(item);
+
+            var reported = Assert.Single(client.GetItems());
+            Assert.Equal(1000, reported.TotalSize);
+            Assert.Equal(750, reported.RemainingSize);
+            Assert.Equal(DownloadItemStatus.Downloading, reported.Status);
+            Assert.NotNull(reported.RemainingTime);
+            Assert.InRange(reported.RemainingTime!.Value.TotalSeconds, 20, 40);
+            Assert.Contains("Downloading", reported.Message);
+            Assert.Contains("250 B", reported.Message);
+        }
+
+        [Fact]
+        public void EstimateRemainingTime_Completed_IsZero()
+        {
+            var item = new BandcampDownloadItem
+            {
+                Status = BandcampDownloadStatus.Completed,
+                TotalSize = 100,
+                DownloadedBytes = 100
+            };
+
+            Assert.Equal(TimeSpan.Zero, BandcampDownloadClient.EstimateRemainingTime(item));
+        }
+
+        [Fact]
+        public void FormatQueueMessage_Resolving_ShowsActivity()
+        {
+            var item = new BandcampDownloadItem
+            {
+                Status = BandcampDownloadStatus.Resolving,
+                Phase = "purchase_resolution"
+            };
+
+            Assert.Equal("Resolving Bandcamp purchase…", BandcampDownloadClient.FormatQueueMessage(item));
+        }
+
+        [Fact]
+        public void ApplyDownloadProgress_UpdatesBytesFromContentLength()
+        {
+            var item = new BandcampDownloadItem { TotalSize = 9999 };
+
+            BandcampDownloadProxy.ApplyDownloadProgress(item, 512, 2048);
+
+            Assert.Equal(2048, item.TotalSize);
+            Assert.Equal(512, item.DownloadedBytes);
+            Assert.Equal(0.25, item.Progress, 3);
+        }
+
+        [Fact]
         public async Task Queue_FailedDownload_SetsNonEmptyErrorMessage()
         {
             var logger = LogManager.GetCurrentClassLogger();
@@ -179,7 +255,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
             Assert.Equal(BandcampDownloadStatus.Failed, tracked!.Status);
             Assert.False(string.IsNullOrWhiteSpace(tracked.ErrorMessage));
             Assert.Contains("Bandcamp download failed (file_download)", tracked.ErrorMessage);
-            Assert.Contains("unknown error", tracked.ErrorMessage);
+            Assert.Contains("IOException: unknown error", tracked.ErrorMessage);
         }
 
         private sealed class BlockingProxy : IBandcampDownloadProxy

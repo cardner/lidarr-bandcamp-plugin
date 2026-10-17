@@ -148,9 +148,10 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 var phase = string.IsNullOrWhiteSpace(item.Phase) ? "failed" : item.Phase;
                 item.Status = BandcampDownloadStatus.Failed;
                 // Always set a non-empty Message so Lidarr Queue / Failed download UI is not blank.
-                item.ErrorMessage = BandcampPathGuard.FormatDownloadFailure(phase, ex.Message);
+                item.ErrorMessage = BandcampPathGuard.FormatDownloadFailure(phase, ex);
                 item.CompletedAt = DateTime.UtcNow;
                 item.Phase = "failed";
+                _registry.Upsert(item);
 
                 _logger.Error(ex, "Bandcamp download queue: Download {0} failed during phase '{1}': {2}",
                     item.DownloadId, phase, item.ErrorMessage);

@@ -132,6 +132,14 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
         }
 
         [Fact]
+        public void FormatDownloadFailure_EmptyExceptionMessage_IncludesExceptionType()
+        {
+            var message = BandcampPathGuard.FormatDownloadFailure("file_download", new IOException(string.Empty));
+
+            Assert.Equal("Bandcamp download failed (file_download): IOException: unknown error", message);
+        }
+
+        [Fact]
         public void FormatDownloadFailure_PreservesPhaseAndMessage()
         {
             var message = BandcampPathGuard.FormatDownloadFailure(

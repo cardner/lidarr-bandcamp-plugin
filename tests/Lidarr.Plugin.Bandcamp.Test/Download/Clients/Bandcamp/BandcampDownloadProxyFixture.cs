@@ -25,7 +25,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
         {
             _httpClientMock = new Mock<IHttpClient>();
             var logger = LogManager.GetCurrentClassLogger();
-            var bandcampHttpClient = new BandcampHttpClient(_httpClientMock.Object, logger);
+            var bandcampHttpClient = BandcampHttpClient.ForTests(_httpClientMock.Object, logger);
             var apiClient = new BandcampApiClient(bandcampHttpClient, logger);
             _subject = new BandcampDownloadProxy(apiClient, bandcampHttpClient, logger);
             _tempRoot = Path.Combine(Path.GetTempPath(), "bandcamp-proxy-tests", Guid.NewGuid().ToString("N"));

@@ -18,7 +18,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Auth
         public BandcampAuthProbeFixture()
         {
             var logger = LogManager.GetCurrentClassLogger();
-            _client = new BandcampApiClient(new BandcampHttpClient(_http.Object, logger), logger);
+            _client = new BandcampApiClient(BandcampHttpClient.ForTests(_http.Object, logger), logger);
         }
 
         private static HttpResponse StringResponse(string content, HttpStatusCode status = HttpStatusCode.OK)

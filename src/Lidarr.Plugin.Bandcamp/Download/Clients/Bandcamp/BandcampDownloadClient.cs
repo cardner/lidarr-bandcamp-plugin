@@ -105,7 +105,10 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 Title = title,
                 OutputPath = outputPath,
                 Cookies = Settings.Cookies,
-                RetagContext = retagContext
+                RetagContext = retagContext,
+                // Seed TotalSize from the indexer release so Activity can show a bar
+                // before CDN Content-Length arrives (and if the CDN omits it).
+                TotalSize = remoteAlbum.Release.Size > 0 ? remoteAlbum.Release.Size : 0
             };
 
             await _taskQueue.EnqueueAsync(item).ConfigureAwait(false);
@@ -134,12 +137,11 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                     DownloadId = bcItem.DownloadId,
                     Title = bcItem.Title,
                     TotalSize = bcItem.TotalSize,
-                    RemainingSize = bcItem.TotalSize > 0
-                        ? bcItem.TotalSize - bcItem.DownloadedBytes
-                        : 0,
+                    RemainingSize = ComputeRemainingSize(bcItem),
+                    RemainingTime = EstimateRemainingTime(bcItem),
                     OutputPath = new OsPath(bcItem.OutputPath),
                     Status = MapStatus(bcItem.Status),
-                    Message = bcItem.ErrorMessage,
+                    Message = FormatQueueMessage(bcItem),
                     CanBeRemoved = bcItem.Status == BandcampDownloadStatus.Completed ||
                                    bcItem.Status == BandcampDownloadStatus.Failed,
                     CanMoveFiles = bcItem.Status == BandcampDownloadStatus.Completed
@@ -147,6 +149,117 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
 
                 yield return clientItem;
             }
+        }
+
+        private static long ComputeRemainingSize(BandcampDownloadItem item)
+        {
+            if (item.TotalSize <= 0)
+            {
+                return 0;
+            }
+
+            var remaining = item.TotalSize - item.DownloadedBytes;
+            return remaining > 0 ? remaining : 0;
+        }
+
+        /// <summary>
+        /// ETA from observed transfer rate once bytes are flowing. Null while resolving
+        /// or when rate cannot be estimated (matches qBittorrent "unknown" → "-").
+        /// </summary>
+        internal static TimeSpan? EstimateRemainingTime(BandcampDownloadItem item)
+        {
+            if (item.Status == BandcampDownloadStatus.Completed)
+            {
+                return TimeSpan.Zero;
+            }
+
+            if (item.Status is BandcampDownloadStatus.Failed or BandcampDownloadStatus.Queued)
+            {
+                return null;
+            }
+
+            if (item.Status is BandcampDownloadStatus.Resolving or BandcampDownloadStatus.Extracting)
+            {
+                return null;
+            }
+
+            if (item.TotalSize <= 0 || item.DownloadedBytes <= 0 || item.DownloadStartedAt == null)
+            {
+                return null;
+            }
+
+            var elapsed = DateTime.UtcNow - item.DownloadStartedAt.Value;
+            if (elapsed.TotalSeconds < 0.5)
+            {
+                return null;
+            }
+
+            var bytesPerSecond = item.DownloadedBytes / elapsed.TotalSeconds;
+            if (bytesPerSecond <= 0)
+            {
+                return null;
+            }
+
+            var remainingBytes = item.TotalSize - item.DownloadedBytes;
+            if (remainingBytes <= 0)
+            {
+                return TimeSpan.Zero;
+            }
+
+            var seconds = remainingBytes / bytesPerSecond;
+            if (seconds > 365 * 24 * 3600)
+            {
+                return null;
+            }
+
+            return TimeSpan.FromSeconds(seconds);
+        }
+
+        internal static string? FormatQueueMessage(BandcampDownloadItem item)
+        {
+            if (!string.IsNullOrWhiteSpace(item.ErrorMessage))
+            {
+                return item.ErrorMessage;
+            }
+
+            if (item.Status == BandcampDownloadStatus.Failed)
+            {
+                return BandcampPathGuard.FormatDownloadFailure(item.Phase, "unknown error");
+            }
+
+            return item.Status switch
+            {
+                BandcampDownloadStatus.Queued => "Queued",
+                BandcampDownloadStatus.Resolving => "Resolving Bandcamp purchase…",
+                BandcampDownloadStatus.Downloading when item.TotalSize > 0 =>
+                    $"Downloading {FormatBytes(item.DownloadedBytes)} / {FormatBytes(item.TotalSize)}",
+                BandcampDownloadStatus.Downloading when item.DownloadedBytes > 0 =>
+                    $"Downloading {FormatBytes(item.DownloadedBytes)}…",
+                BandcampDownloadStatus.Downloading => "Downloading…",
+                BandcampDownloadStatus.Extracting => "Extracting archive…",
+                BandcampDownloadStatus.Completed => null,
+                _ => null
+            };
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            if (bytes < 1024)
+            {
+                return $"{bytes} B";
+            }
+
+            if (bytes < 1024 * 1024)
+            {
+                return $"{bytes / 1024.0:0.#} KB";
+            }
+
+            if (bytes < 1024L * 1024 * 1024)
+            {
+                return $"{bytes / (1024.0 * 1024.0):0.#} MB";
+            }
+
+            return $"{bytes / (1024.0 * 1024.0 * 1024.0):0.##} GB";
         }
 
         /// <summary>

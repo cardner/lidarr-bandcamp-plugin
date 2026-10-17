@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using NLog;
 using NzbDrone.Common.Http;
@@ -630,7 +631,7 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             var contentType = response.Headers?.ContentType ?? string.Empty;
             if (contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
             {
-                _logger.Debug("Bandcamp API: Received HTML instead of expected ZIP — download URL may be expired");
+                _logger.Warn("Bandcamp API: Received HTML instead of expected ZIP — download URL may be expired");
                 throw new DownloadException(
                     "Received HTML response instead of expected audio archive. " +
                     "The download URL may have expired or the session cookies may be invalid.");
@@ -638,6 +639,15 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
 
             _logger.Debug("Bandcamp API: File download response received (Content-Type: {0})", contentType);
             return response;
+        }
+
+        /// <summary>
+        /// Streams a resolved Bandcamp CDN URL to disk (preferred for large FLAC zips).
+        /// </summary>
+        public Task DownloadFileToPathAsync(string cookies, string fileUrl, string filePath, CancellationToken cancellationToken = default)
+        {
+            _logger.Debug("Bandcamp API: Streaming file download to {0}", filePath);
+            return _httpClient.DownloadToFileAsync(fileUrl, cookies, filePath, cancellationToken);
         }
 
         private static double? ParseAlbumDurationSeconds(string content)

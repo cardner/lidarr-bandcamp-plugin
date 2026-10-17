@@ -22,7 +22,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Download.Clients.Bandcamp
         {
             _innerHttpClientMock = new Mock<IHttpClient>();
             _logger = LogManager.GetCurrentClassLogger();
-            _bandcampHttpClient = new BandcampHttpClient(_innerHttpClientMock.Object, _logger);
+            _bandcampHttpClient = BandcampHttpClient.ForTests(_innerHttpClientMock.Object, _logger);
         }
 
         /// <summary>

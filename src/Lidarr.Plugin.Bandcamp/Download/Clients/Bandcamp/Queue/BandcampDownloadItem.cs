@@ -60,6 +60,11 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         public DateTime QueuedAt { get; set; } = DateTime.UtcNow;
 
         /// <summary>
+        /// When the archive HTTP transfer started (used for ETA).
+        /// </summary>
+        public DateTime? DownloadStartedAt { get; set; }
+
+        /// <summary>
         /// When the download completed (successfully or with failure).
         /// </summary>
         public DateTime? CompletedAt { get; set; }

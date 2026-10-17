@@ -1,6 +1,8 @@
 using System;
+using System.IO;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using NLog;
 using NzbDrone.Common.Http;
@@ -11,16 +13,13 @@ namespace NzbDrone.Core.Http.Bandcamp
     /// HTTP client wrapper for Bandcamp requests with rate limiting,
     /// browser-like user-agent, cookie injection, and credential-safe logging.
     ///
-    /// Custom User-Agent is intentional: Bandcamp serves full pages / fan APIs
-    /// to browser-like clients. Lidarr's default <c>ManagedHttpDispatcher</c>
-    /// rejects non-Lidarr User-Agents, so this plugin also registers
-    /// <see cref="BandcampHttpDispatcher"/> and provides
-    /// <see cref="BandcampNativeHttp"/> for calls that must never touch Lidarr's
-    /// dispatcher.
+    /// Production / Lidarr DI always uses <see cref="BandcampNativeHttp"/> so Bandcamp
+    /// traffic never depends on <c>ManagedHttpDispatcher</c> / <c>IHttpDispatcher</c>
+    /// registration order (which other plugins can disturb). This matches the console
+    /// harness path that successfully downloads large FLAC archives.
     ///
-    /// Construct with <see cref="BandcampNativeHttp"/> (live harness / preferred)
-    /// to bypass Lidarr's dispatcher entirely. Construct with <see cref="IHttpClient"/>
-    /// for in-host DI when <see cref="BandcampHttpDispatcher"/> is registered.
+    /// Unit tests that mock <see cref="IHttpClient"/> must construct via
+    /// <see cref="ForTests"/>.
     /// </summary>
     public class BandcampHttpClient
     {
@@ -35,19 +34,53 @@ namespace NzbDrone.Core.Http.Bandcamp
         private readonly BandcampNativeHttp? _nativeHttp;
         private readonly Logger _logger;
 
-        public BandcampHttpClient(IHttpClient httpClient, Logger logger)
+        /// <summary>
+        /// Lidarr DI entry point — always native HTTP (same as the live harness).
+        /// Single public constructor so DryIoc cannot pick an IHttpClient-based path.
+        /// </summary>
+        public BandcampHttpClient(Logger logger)
         {
+            _nativeHttp = new BandcampNativeHttp(logger);
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
+
+        /// <summary>
+        /// Live smoke / explicit native injection (console harness).
+        /// </summary>
+        public static BandcampHttpClient ForNative(BandcampNativeHttp nativeHttp, Logger logger)
+        {
+            return new BandcampHttpClient(nativeHttp, logger, forNative: true);
+        }
+
+        private BandcampHttpClient(BandcampNativeHttp nativeHttp, Logger logger, bool forNative)
+        {
+            if (!forNative)
+            {
+                throw new ArgumentException("Use ForNative(...) for an injected BandcampNativeHttp.", nameof(forNative));
+            }
+
+            _nativeHttp = nativeHttp ?? throw new ArgumentNullException(nameof(nativeHttp));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
+
+        private BandcampHttpClient(IHttpClient httpClient, Logger logger, bool forTests)
+        {
+            if (!forTests)
+            {
+                throw new ArgumentException("Use ForTests(...) for the IHttpClient seam.", nameof(forTests));
+            }
+
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         /// <summary>
-        /// Preferred for live smoke / any path that must not set User-Agent on Lidarr's dispatcher.
+        /// Test seam — routes through a mocked Lidarr <see cref="IHttpClient"/>.
+        /// Not used by Lidarr DI (DryIoc cannot satisfy the private bool gate).
         /// </summary>
-        public BandcampHttpClient(BandcampNativeHttp nativeHttp, Logger logger)
+        public static BandcampHttpClient ForTests(IHttpClient httpClient, Logger logger)
         {
-            _nativeHttp = nativeHttp ?? throw new ArgumentNullException(nameof(nativeHttp));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            return new BandcampHttpClient(httpClient, logger, forTests: true);
         }
 
         /// <summary>
@@ -100,7 +133,7 @@ namespace NzbDrone.Core.Http.Bandcamp
             }
             catch (Exception ex)
             {
-                _logger.Debug(ex, "Bandcamp request failed: {0}", request.Url);
+                _logger.Warn(ex, "Bandcamp request failed: {0} {1}", request.Method, request.Url);
                 throw;
             }
         }
@@ -108,6 +141,47 @@ namespace NzbDrone.Core.Http.Bandcamp
         public Task<HttpResponse> ExecuteRawAsync(HttpRequest request)
         {
             return ExecuteAsync(request);
+        }
+
+        /// <summary>
+        /// Streams a Bandcamp CDN / statdownload URL straight to disk (avoids buffering
+        /// ~400MB+ FLAC zips in RAM — important in memory-constrained Docker).
+        /// </summary>
+        public Task DownloadToFileAsync(
+            string url,
+            string cookies,
+            string filePath,
+            CancellationToken cancellationToken = default,
+            Action<long, long?>? progress = null)
+        {
+            if (_nativeHttp != null)
+            {
+                return _nativeHttp.DownloadToFileAsync(url, cookies, filePath, cancellationToken, progress);
+            }
+
+            // Test seam: buffer via IHttpClient then write (mocks return small payloads).
+            return DownloadToFileViaLidarrHttpAsync(url, cookies, filePath, cancellationToken, progress);
+        }
+
+        private async Task DownloadToFileViaLidarrHttpAsync(
+            string url,
+            string cookies,
+            string filePath,
+            CancellationToken cancellationToken,
+            Action<long, long?>? progress)
+        {
+            var builder = CreateRequestBuilder(url, cookies);
+            var request = builder.Build();
+            var response = await _httpClient!.ExecuteAsync(request).ConfigureAwait(false);
+            var data = response.ResponseData;
+            if (data == null || data.Length == 0)
+            {
+                throw new InvalidOperationException("Download response contained no data.");
+            }
+
+            progress?.Invoke(0, data.Length);
+            await File.WriteAllBytesAsync(filePath, data, cancellationToken).ConfigureAwait(false);
+            progress?.Invoke(data.Length, data.Length);
         }
 
         private async Task<HttpResponse> ExecuteViaNativeAsync(HttpRequest request)

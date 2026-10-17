@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -36,7 +38,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Http
             });
 
             using var http = new HttpClient(handler);
-            using var client = new BandcampNativeHttp(http, LogManager.GetCurrentClassLogger());
+            using var client = BandcampNativeHttp.ForTests(http, LogManager.GetCurrentClassLogger());
 
             var result = await client.GetAsync("https://bandcamp.com/api/fan/2/collection_summary", "raw-cookie-value");
 
@@ -53,6 +55,54 @@ namespace Lidarr.Plugin.Bandcamp.Test.Http
             using var client = BandcampNativeHttp.CreateDefaultClient();
             Assert.Contains("Mozilla/5.0", client.DefaultRequestHeaders.UserAgent.ToString());
             Assert.DoesNotContain("Lidarr", client.DefaultRequestHeaders.UserAgent.ToString());
+        }
+
+        [Fact]
+        public async Task DownloadToFileAsync_ReportsProgressWithContentLength()
+        {
+            var payload = new byte[300_000];
+            new Random(1).NextBytes(payload);
+
+            var handler = new CaptureHandler((_, _) =>
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(payload)
+                };
+                response.Content.Headers.ContentType =
+                    new System.Net.Http.Headers.MediaTypeHeaderValue("application/zip");
+                response.Content.Headers.ContentLength = payload.Length;
+                return response;
+            });
+
+            using var http = new HttpClient(handler);
+            using var client = BandcampNativeHttp.ForTests(http, LogManager.GetCurrentClassLogger());
+
+            var tempFile = Path.Combine(Path.GetTempPath(), $"bc-progress-{Guid.NewGuid():N}.bin");
+            var reports = new System.Collections.Generic.List<(long Downloaded, long? Total)>();
+
+            try
+            {
+                await client.DownloadToFileAsync(
+                    "https://bandcamp.com/download/file",
+                    "identity=test",
+                    tempFile,
+                    CancellationToken.None,
+                    (downloaded, total) => reports.Add((downloaded, total)));
+
+                Assert.True(reports.Count >= 2);
+                Assert.Equal(payload.Length, reports[0].Total);
+                Assert.Equal(0, reports[0].Downloaded);
+                Assert.Equal(payload.Length, reports[^1].Downloaded);
+                Assert.Equal(payload.Length, new FileInfo(tempFile).Length);
+            }
+            finally
+            {
+                if (File.Exists(tempFile))
+                {
+                    File.Delete(tempFile);
+                }
+            }
         }
 
         private sealed class CaptureHandler : HttpMessageHandler

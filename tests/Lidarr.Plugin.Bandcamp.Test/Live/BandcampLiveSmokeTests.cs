@@ -33,7 +33,7 @@ namespace Lidarr.Plugin.Bandcamp.Test.Live
 
             var logger = LogManager.GetCurrentClassLogger();
             using var native = new BandcampNativeHttp(logger);
-            var api = new BandcampApiClient(new BandcampHttpClient(native, logger), logger);
+            var api = new BandcampApiClient(BandcampHttpClient.ForNative(native, logger), logger);
 
             var probe = await api.ProbeAuthAsync(cookie);
             Assert.True(probe.Success, probe.Message);
