@@ -239,18 +239,22 @@ namespace NzbDrone.Core.Indexers.Bandcamp
                 return releases;
             }
 
-            foreach (var format in downloadItem.DownloadUrls)
-            {
-                if (string.IsNullOrWhiteSpace(format.Value))
-                {
-                    continue;
-                }
+            // Prefer lossless (FLAC first) so interactive search / auto-grab surfaces FLAC
+            // ahead of mp3/vorbis/aac when Bandcamp's downloads object enumerates lossy first.
+            var formats = downloadItem.DownloadUrls
+                .Where(f => !string.IsNullOrWhiteSpace(f.Value))
+                .OrderBy(f => FormatPreferenceRank(f.Key))
+                .ThenBy(f => f.Key, StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
+            foreach (var format in formats)
+            {
                 if (!downloadItem.DownloadSizes.TryGetValue(format.Key, out var size) || size <= 0)
                 {
-                    _logger.Debug("Bandcamp indexer: Skipping {0} / {1} format {2} because no positive size was provided",
-                        item.BandName, item.Title, format.Key);
-                    continue;
+                    size = EstimateSizeBytes(format.Key, albumDurationSeconds);
+                    _logger.Debug(
+                        "Bandcamp indexer: No size_mb for {0} / {1} format {2}; using estimate {3} bytes",
+                        item.BandName, item.Title, format.Key, size);
                 }
 
                 releases.Add(ToReleaseInfo(item, format.Key, size, albumDurationSeconds, expectedTrackCounts));
@@ -421,9 +425,10 @@ namespace NzbDrone.Core.Indexers.Bandcamp
                 baseTitle += $" [{trackCount} tracks]";
             }
 
-            // Add WEB for custom format matching - Bandcamp is a web source
-            // This ensures releases match WEB custom format requirements in quality profiles
-            return $"{baseTitle} [WEB] [{formatLabel}]";
+            // Format token first so Lidarr's QualityParser binds FLAC/ALAC/WAV before the
+            // WEB source tag. A bare [WEB] with an unrecognized codec falls through to MP3-320.
+            // Keep [WEB] for custom-format matching (Bandcamp is a web source).
+            return $"{baseTitle} [{formatLabel}] [WEB]";
         }
 
         internal static string NormalizeAlbumTitle(string? artistName, string? albumTitle)
@@ -522,16 +527,82 @@ namespace NzbDrone.Core.Indexers.Bandcamp
             return albumTitle;
         }
 
+        /// <summary>
+        /// Lower rank = preferred in search results. FLAC first, then other lossless, then lossy.
+        /// </summary>
+        internal static int FormatPreferenceRank(string formatKey)
+        {
+            return NormalizeFormatKey(formatKey) switch
+            {
+                "flac" => 0,
+                "alac" => 1,
+                "wav" => 2,
+                "aiff" or "aiff-lossless" => 3,
+                "mp3-320" => 10,
+                "mp3-v0" => 11,
+                "aac-hi" or "aac" => 12,
+                "vorbis" or "ogg-vorbis" => 13,
+                _ => 50
+            };
+        }
+
+        internal static string NormalizeFormatKey(string formatKey)
+        {
+            return (formatKey ?? string.Empty).Trim().ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// Labels must be strings Lidarr's <c>QualityParser</c> recognizes.
+        /// AIFF has no Lidarr quality — label as WAV (PCM) so it is not mis-parsed as MP3-320
+        /// via the WEB fallback when the codec is unknown.
+        /// </summary>
         private static string FormatLabel(string formatKey, long size, double? albumDurationSeconds)
         {
-            return formatKey switch
+            return NormalizeFormatKey(formatKey) switch
             {
+                "flac" => "FLAC",
+                "alac" => "ALAC",
+                "wav" => "WAV",
+                // Lidarr QualityParser has no AIFF; WAV/PCM maps to lossless WAV.
+                "aiff" or "aiff-lossless" => "WAV",
                 "mp3-v0" => "MP3 VBR V0",
                 "mp3-320" => "MP3 320",
                 "vorbis" or "ogg-vorbis" => InferVorbisLabel(size, albumDurationSeconds),
-                "aac-hi" => "AAC",
-                "aiff-lossless" or "aiff" => "AIFF",
+                "aac-hi" or "aac" => "AAC",
                 _ => formatKey.Replace('-', ' ').ToUpperInvariant()
+            };
+        }
+
+        /// <summary>
+        /// When Bandcamp omits size_mb for a format (often FLAC), still emit the release
+        /// with a duration-based estimate so lossless is not dropped from interactive search.
+        /// </summary>
+        internal static long EstimateSizeBytes(string formatKey, double? albumDurationSeconds)
+        {
+            var kbps = NormalizeFormatKey(formatKey) switch
+            {
+                "flac" or "alac" => 900,
+                "wav" or "aiff" or "aiff-lossless" => 1411,
+                "mp3-320" => 320,
+                "mp3-v0" => 220,
+                "aac-hi" or "aac" => 256,
+                "vorbis" or "ogg-vorbis" => 192,
+                _ => 256
+            };
+
+            if (albumDurationSeconds is > 0)
+            {
+                return (long)Math.Max(1, Math.Round(kbps * 1000d / 8d * albumDurationSeconds.Value));
+            }
+
+            // No duration — rough album-scale placeholders so Size stays positive.
+            return NormalizeFormatKey(formatKey) switch
+            {
+                "flac" or "alac" => 300L * 1024 * 1024,
+                "wav" or "aiff" or "aiff-lossless" => 500L * 1024 * 1024,
+                "mp3-320" => 100L * 1024 * 1024,
+                "mp3-v0" => 70L * 1024 * 1024,
+                _ => 50L * 1024 * 1024
             };
         }
 
@@ -566,30 +637,28 @@ namespace NzbDrone.Core.Indexers.Bandcamp
 
         private static string CodecForFormat(string formatKey)
         {
-            return formatKey switch
+            return NormalizeFormatKey(formatKey) switch
             {
                 "flac" => "FLAC",
                 "alac" => "ALAC",
-                "wav" => "WAV",
-                "aiff" or "aiff-lossless" => "AIFF",
+                "wav" or "aiff" or "aiff-lossless" => "WAV",
                 "mp3-v0" or "mp3-320" => "MP3",
                 "vorbis" or "ogg-vorbis" => "OGG",
-                "aac-hi" => "AAC",
+                "aac-hi" or "aac" => "AAC",
                 _ => string.Empty
             };
         }
 
         private static string ContainerForFormat(string formatKey)
         {
-            return formatKey switch
+            return NormalizeFormatKey(formatKey) switch
             {
                 "flac" => "FLAC",
                 "alac" => "ALAC",
-                "wav" => "WAV",
-                "aiff" or "aiff-lossless" => "AIFF",
+                "wav" or "aiff" or "aiff-lossless" => "WAV",
                 "mp3-v0" or "mp3-320" => "MP3",
                 "vorbis" or "ogg-vorbis" => "OGG",
-                "aac-hi" => "M4A",
+                "aac-hi" or "aac" => "M4A",
                 _ => string.Empty
             };
         }

@@ -121,25 +121,29 @@ namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
             Assert.All(results, r => Assert.Equal("Fresh", r.Album));
             Assert.DoesNotContain(results, r => r.Title.Contains("OGG", StringComparison.OrdinalIgnoreCase));
 
-            var v0 = Assert.Single(results.Where(r => r.Title.Contains("[MP3 VBR V0]", StringComparison.OrdinalIgnoreCase)));
+            // FLAC first even though Bandcamp JSON listed mp3-v0 before flac
+            Assert.Contains("[FLAC]", results[0].Title, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("#format=flac", results[0].DownloadUrl, StringComparison.OrdinalIgnoreCase);
+
+            var v0 = Assert.Single(results, r => r.Title.Contains("[MP3 VBR V0]", StringComparison.OrdinalIgnoreCase));
             Assert.Equal((long)(41.2 * 1024 * 1024), v0.Size);
             Assert.Equal("MP3", v0.Codec);
             Assert.Equal("MP3", v0.Container);
             Assert.Contains("#format=mp3-v0", v0.DownloadUrl, StringComparison.OrdinalIgnoreCase);
 
-            var flac = Assert.Single(results.Where(r => r.Title.Contains("[FLAC]", StringComparison.OrdinalIgnoreCase)));
+            var flac = Assert.Single(results, r => r.Title.Contains("[FLAC]", StringComparison.OrdinalIgnoreCase));
             Assert.Equal(123L * 1024 * 1024, flac.Size);
             Assert.Equal("FLAC", flac.Codec);
             Assert.Equal("FLAC", flac.Container);
             Assert.Contains("#format=flac", flac.DownloadUrl, StringComparison.OrdinalIgnoreCase);
 
-            var vorbis = Assert.Single(results.Where(r => r.Title.Contains("[Vorbis Q6]", StringComparison.OrdinalIgnoreCase)));
+            var vorbis = Assert.Single(results, r => r.Title.Contains("[Vorbis Q6]", StringComparison.OrdinalIgnoreCase));
             Assert.Equal(28L * 1024 * 1024, vorbis.Size);
             Assert.Equal("OGG", vorbis.Codec);
             Assert.Equal("OGG", vorbis.Container);
             Assert.Contains("#format=vorbis", vorbis.DownloadUrl, StringComparison.OrdinalIgnoreCase);
 
-            var mp3 = Assert.Single(results.Where(r => r.Title.Contains("[MP3 320]", StringComparison.OrdinalIgnoreCase)));
+            var mp3 = Assert.Single(results, r => r.Title.Contains("[MP3 320]", StringComparison.OrdinalIgnoreCase));
             Assert.Equal((long)(88.5 * 1024 * 1024), mp3.Size);
             Assert.Equal("MP3", mp3.Codec);
             Assert.Equal("MP3", mp3.Container);
@@ -208,24 +212,24 @@ namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
             Assert.Contains("[WEB]", title);
             Assert.Contains("[FLAC]", title);
 
-            // Verify format: Artist - Album [WEB] [Format]
+            // Verify format: Artist - Album [Format] [WEB]
             var parts = title.Split(" - ");
             Assert.Equal(2, parts.Length);
             Assert.StartsWith("Artist Name", parts[0]);
             Assert.Contains("Album Title", parts[1]);
-            Assert.Contains("[WEB] [FLAC]", parts[1]);
+            Assert.Contains("[FLAC] [WEB]", parts[1]);
 
             Assert.Equal("Artist Name", result.Artist);
             Assert.Equal("Album Title", result.Album);
         }
 
         [Theory]
-        [InlineData("Artist Name", "Artist Name - Album Title", "FLAC", "Artist Name - Album Title [WEB] [FLAC]", "Artist Name", "Album Title")]
-        [InlineData("Artist Name", "\"Album Title\"", "FLAC", "Artist Name - Album Title [WEB] [FLAC]", "Artist Name", "Album Title")]
-        [InlineData("Artist Name", "Album Title - Single", "FLAC", "Artist Name - Album Title [WEB] [FLAC]", "Artist Name", "Album Title")]
-        [InlineData("Artist Name", "Album Title (EP)", "FLAC", "Artist Name - Album Title [WEB] [FLAC]", "Artist Name", "Album Title")]
-        [InlineData("Bartees Strange", "Province / Ever New", "FLAC", "Bartees Strange - Province / Ever New [WEB] [FLAC]", "Bartees Strange", "Province / Ever New")]
-        [InlineData("Troye Sivan", "We're My OTP", "MP3 320", "Troye Sivan - We're My OTP [WEB] [MP3 320]", "Troye Sivan", "We're My OTP")]
+        [InlineData("Artist Name", "Artist Name - Album Title", "FLAC", "Artist Name - Album Title [FLAC] [WEB]", "Artist Name", "Album Title")]
+        [InlineData("Artist Name", "\"Album Title\"", "FLAC", "Artist Name - Album Title [FLAC] [WEB]", "Artist Name", "Album Title")]
+        [InlineData("Artist Name", "Album Title - Single", "FLAC", "Artist Name - Album Title [FLAC] [WEB]", "Artist Name", "Album Title")]
+        [InlineData("Artist Name", "Album Title (EP)", "FLAC", "Artist Name - Album Title [FLAC] [WEB]", "Artist Name", "Album Title")]
+        [InlineData("Bartees Strange", "Province / Ever New", "FLAC", "Bartees Strange - Province / Ever New [FLAC] [WEB]", "Bartees Strange", "Province / Ever New")]
+        [InlineData("Troye Sivan", "We're My OTP", "MP3 320", "Troye Sivan - We're My OTP [MP3 320] [WEB]", "Troye Sivan", "We're My OTP")]
         public void BuildReleaseTitle_ShouldProduceParserFriendlyTitles(string artistName,
                                                                         string albumTitle,
                                                                         string formatLabel,
@@ -344,18 +348,18 @@ namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
         }
 
         [Theory]
-        [InlineData("Artist Name - Album Title [WEB] [FLAC]", true)]
-        [InlineData("Artist Name - Album Title [WEB] [MP3 320]", true)]
-        [InlineData("Artist Name - Album Title [WEB] [Vorbis Q6]", true)]
-        [InlineData("Artist Name - Album Title [WEB] [MP3 VBR V0]", true)]
+        [InlineData("Artist Name - Album Title [FLAC] [WEB]", true)]
+        [InlineData("Artist Name - Album Title [MP3 320] [WEB]", true)]
+        [InlineData("Artist Name - Album Title [Vorbis Q6] [WEB]", true)]
+        [InlineData("Artist Name - Album Title [MP3 VBR V0] [WEB]", true)]
         [InlineData("Artist Name - Album Title [FLAC]", false)] // Missing [WEB]
         [InlineData("Artist Name - Album Title", false)] // Missing format tags
-        [InlineData("- Album Title [WEB] [FLAC]", false)] // Missing artist
-        [InlineData("Artist Name [WEB] [FLAC]", false)] // Missing album section
+        [InlineData("- Album Title [FLAC] [WEB]", false)] // Missing artist
+        [InlineData("Artist Name [FLAC] [WEB]", false)] // Missing album section
         [InlineData("Artist Name - Album Title WEB FLAC", false)] // Missing brackets
         public void ReleaseTitle_ShouldFollowExpectedPattern(string title, bool isValid)
         {
-            // Expected pattern: Artist - Album [WEB] [Format]
+            // Expected pattern: Artist - Album [Format] [WEB]
             // Where Format is like FLAC, MP3 320, Vorbis Q6, MP3 VBR V0
             // Format tags are in square brackets
 
@@ -371,10 +375,11 @@ namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
                 Assert.NotEmpty(parts[0]); // Artist required
                 Assert.NotEmpty(parts[1]); // Album section required
 
-                // Verify album section contains [WEB] and format tag
+                // Verify album section contains format tag then [WEB]
                 var albumSection = parts[1];
                 Assert.Contains("[WEB]", albumSection);
-                Assert.Contains("[", albumSection.Substring(albumSection.IndexOf("[WEB]"))); // Format tag after [WEB]
+                Assert.True(albumSection.IndexOf('[') < albumSection.IndexOf("[WEB]", StringComparison.Ordinal),
+                    "Format tag should appear before [WEB]");
 
                 // Parse with Lidarr's parser to ensure it's parsable
                 var parsed = Parser.ParseAlbumTitle(title);
@@ -396,6 +401,97 @@ namespace Lidarr.Plugin.Bandcamp.Test.Indexers.Bandcamp
                         "Title with both [WEB] and format tag should be valid");
                 }
             }
+        }
+
+        [Fact]
+        public async Task Fetch_MultiFormat_MissingFlacSize_StillEmitsFlacFirst()
+        {
+            // Bandcamp sometimes omits size_mb for FLAC while listing mp3/vorbis/aac sizes.
+            // Old code skipped zero-size formats — FLAC disappeared from interactive search.
+            _httpClientMock
+                .Setup(c => c.ExecuteAsync(It.IsAny<HttpRequest>()))
+                .ReturnsAsync((HttpRequest request) =>
+                {
+                    return request.Url.FullUri switch
+                    {
+                        "https://bandcamp.com" => CreateStringResponse(
+                            @"<html><body><div id=""HomepageApp"" data-blob=""{&quot;pageContext&quot;:{&quot;identity&quot;:{&quot;fanId&quot;:42,&quot;isLoggedIn&quot;:true}}}""></div></body></html>",
+                            request),
+                        "https://bandcamp.com/api/fancollection/1/collection_items" => CreateStringResponse(
+                            @"{
+                                ""redownload_urls"": { ""a111"": ""https://bandcamp.com/download?type=album&id=111"" },
+                                ""items"": [{
+                                    ""item_id"": 111,
+                                    ""item_type"": ""album"",
+                                    ""sale_item_type"": ""a"",
+                                    ""sale_item_id"": 111,
+                                    ""token"": ""tok-111"",
+                                    ""item_url"": ""https://artist.bandcamp.com/album/multi"",
+                                    ""item_title"": ""Multi"",
+                                    ""band_name"": ""Artist"",
+                                    ""release_date"": null
+                                }]
+                            }",
+                            request),
+                        "https://bandcamp.com/download?type=album&id=111" => CreateStringResponse(
+                            // Lossy formats first in JSON; FLAC has url but no size_mb; AIFF present
+                            @"<html><body><div id=""pagedata"" data-blob=""{&quot;digital_items&quot;:[{&quot;item_id&quot;:111,&quot;item_type&quot;:&quot;album&quot;,&quot;title&quot;:&quot;Multi&quot;,&quot;downloads&quot;:{&quot;mp3-v0&quot;:{&quot;url&quot;:&quot;https://bandcamp.com/statdownload/album/111?sig=v0&quot;,&quot;size_mb&quot;:&quot;40MB&quot;},&quot;aac-hi&quot;:{&quot;url&quot;:&quot;https://bandcamp.com/statdownload/album/111?sig=aac&quot;,&quot;size_mb&quot;:&quot;35MB&quot;},&quot;vorbis&quot;:{&quot;url&quot;:&quot;https://bandcamp.com/statdownload/album/111?sig=ogg&quot;,&quot;size_mb&quot;:&quot;28MB&quot;},&quot;flac&quot;:{&quot;url&quot;:&quot;https://bandcamp.com/statdownload/album/111?sig=flac&quot;},&quot;aiff-lossless&quot;:{&quot;url&quot;:&quot;https://bandcamp.com/statdownload/album/111?sig=aiff&quot;,&quot;size_mb&quot;:&quot;500MB&quot;}}}]}""></div></body></html>",
+                            request),
+                        "https://artist.bandcamp.com/album/multi" => CreateStringResponse(
+                            @"<html><body><script data-tralbum=""{&quot;trackinfo&quot;:[{&quot;duration&quot;:200.0},{&quot;duration&quot;:180.0}]}""></script></body></html>",
+                            request),
+                        _ => CreateStringResponse(@"{""items"": []}", request)
+                    };
+                });
+
+            var criteria = new AlbumSearchCriteria
+            {
+                Artist = new Artist { Name = "Artist" },
+                AlbumTitle = "Multi"
+            };
+
+            var results = await _subject.Fetch(criteria);
+
+            Assert.Equal(5, results.Count);
+            Assert.Contains("[FLAC]", results[0].Title, StringComparison.OrdinalIgnoreCase);
+            Assert.True(results[0].Size > 0, "FLAC without size_mb should still get a positive estimated size");
+            Assert.Contains("#format=flac", results[0].DownloadUrl, StringComparison.OrdinalIgnoreCase);
+
+            // AIFF is labeled WAV so Lidarr QualityParser does not WEB-fallback to MP3-320
+            var aiff = Assert.Single(results, r => r.DownloadUrl.Contains("#format=aiff-lossless", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("[WAV]", aiff.Title, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("[AIFF]", aiff.Title, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("WAV", aiff.Codec);
+
+            Assert.Contains(results, r => r.Title.Contains("[MP3 VBR V0]", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(results, r => r.Title.Contains("[AAC]", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(results, r => r.Title.Contains("[Vorbis", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Theory]
+        [InlineData("flac", 0)]
+        [InlineData("FLAC", 0)]
+        [InlineData("alac", 1)]
+        [InlineData("wav", 2)]
+        [InlineData("aiff-lossless", 3)]
+        [InlineData("mp3-320", 10)]
+        [InlineData("mp3-v0", 11)]
+        [InlineData("aac-hi", 12)]
+        [InlineData("vorbis", 13)]
+        public void FormatPreferenceRank_OrdersLosslessBeforeLossy(string formatKey, int expectedRank)
+        {
+            Assert.Equal(expectedRank, BandcampIndexer.FormatPreferenceRank(formatKey));
+            Assert.True(BandcampIndexer.FormatPreferenceRank("flac") < BandcampIndexer.FormatPreferenceRank("mp3-320"));
+            Assert.True(BandcampIndexer.FormatPreferenceRank("flac") < BandcampIndexer.FormatPreferenceRank("vorbis"));
+            Assert.True(BandcampIndexer.FormatPreferenceRank("flac") < BandcampIndexer.FormatPreferenceRank("aac-hi"));
+        }
+
+        [Fact]
+        public void EstimateSizeBytes_WithoutDuration_ReturnsPositivePlaceholder()
+        {
+            Assert.True(BandcampIndexer.EstimateSizeBytes("flac", null) > 0);
+            Assert.True(BandcampIndexer.EstimateSizeBytes("flac", 400) >
+                        BandcampIndexer.EstimateSizeBytes("mp3-320", 400));
         }
 
         private static HttpResponse CreateStringResponse(string content, HttpRequest request, HttpStatusCode statusCode = HttpStatusCode.OK)
