@@ -54,6 +54,11 @@ Bandcamp does **not** offer fan OAuth for personal libraries. The only credentia
 
 See [docs/live-testing.md](docs/live-testing.md). Set `BANDCAMP_IDENTITY_COOKIE` and run the console harness. CI never requires this secret.
 
+### Lidarr UI E2E
+
+Step-by-step install / Test / Delay Profile / grab: [docs/lidarr-ui-checklist.md](docs/lidarr-ui-checklist.md).  
+Local helpers: `./scripts/build-plugin.sh`, `./scripts/run-lidarr-local.sh`, `docker/docker-compose.lidarr.yml`, `./scripts/lidarr-api-bootstrap.sh`.
+
 ## Lidarr setup
 
 ### 1. Indexer
