@@ -26,6 +26,7 @@ TestResults/
 ## Secrets
 *.cookies
 cookies.txt
+live-artifacts/
 
 ## GSD / agent-local artifacts
 .gsd/

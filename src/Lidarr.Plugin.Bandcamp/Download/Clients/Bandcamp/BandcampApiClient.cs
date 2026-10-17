@@ -2,11 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using NLog;
 using NzbDrone.Common.Http;
+using NzbDrone.Core.Auth.Bandcamp;
 using NzbDrone.Core.Http.Bandcamp;
 
 namespace NzbDrone.Core.Download.Clients.Bandcamp
@@ -59,6 +61,68 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         }
 
         /// <summary>
+        /// Validates cookie shape, then probes Bandcamp for a real fan session.
+        /// Prefer this for Test / live harness messaging.
+        /// </summary>
+        public async Task<BandcampAuthProbeResult> ProbeAuthAsync(string? cookies)
+        {
+            var shape = BandcampIdentityAuth.ValidateShape(cookies);
+            if (!shape.IsValid)
+            {
+                return BandcampAuthProbeResult.Fail(shape.FailureKind, shape.Message);
+            }
+
+            try
+            {
+                var summary = await TryResolveFanIdFromCollectionSummaryDetailedAsync(shape.NormalizedCookieHeader)
+                    .ConfigureAwait(false);
+
+                if (summary.FanId != null)
+                {
+                    return BandcampAuthProbeResult.Ok(summary.FanId.Value, shape.NormalizedCookieHeader);
+                }
+
+                if (summary.FailureKind is BandcampAuthFailureKind.ChallengePage
+                    or BandcampAuthFailureKind.HttpUnauthorized
+                    or BandcampAuthFailureKind.HttpForbidden)
+                {
+                    return BandcampAuthProbeResult.Fail(
+                        summary.FailureKind,
+                        BandcampIdentityAuth.DescribeFailure(summary.FailureKind),
+                        shape.NormalizedCookieHeader);
+                }
+
+                // Homepage fallback when summary was empty/unparseable but not a hard auth reject
+                var homepage = await TryResolveFanIdFromHomepageDetailedAsync(shape.NormalizedCookieHeader)
+                    .ConfigureAwait(false);
+
+                if (homepage.FanId != null)
+                {
+                    return BandcampAuthProbeResult.Ok(homepage.FanId.Value, shape.NormalizedCookieHeader);
+                }
+
+                var kind = homepage.FailureKind != BandcampAuthFailureKind.None
+                    ? homepage.FailureKind
+                    : summary.FailureKind != BandcampAuthFailureKind.None
+                        ? summary.FailureKind
+                        : BandcampAuthFailureKind.ExpiredOrRejected;
+
+                return BandcampAuthProbeResult.Fail(
+                    kind,
+                    BandcampIdentityAuth.DescribeFailure(kind, homepage.Detail ?? summary.Detail),
+                    shape.NormalizedCookieHeader);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Bandcamp API: auth probe failed");
+                return BandcampAuthProbeResult.Fail(
+                    BandcampAuthFailureKind.NetworkError,
+                    BandcampIdentityAuth.DescribeFailure(BandcampAuthFailureKind.NetworkError, ex.Message),
+                    shape.NormalizedCookieHeader);
+            }
+        }
+
+        /// <summary>
         /// Resolves the fan_id for the authenticated user.
         /// Prefers the JSON fan API (<c>/api/fan/2/collection_summary</c>), then falls
         /// back to scraping the homepage data-blob / pagedata (older Bandcamp layouts).
@@ -67,100 +131,20 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
         /// <returns>The fan_id, or null if resolution fails.</returns>
         public async Task<long?> ResolveFanIdAsync(string cookies)
         {
-            var fromSummary = await TryResolveFanIdFromCollectionSummaryAsync(cookies).ConfigureAwait(false);
-            if (fromSummary != null)
-            {
-                return fromSummary;
-            }
-
-            _logger.Debug("Bandcamp API: Resolving fan_id from homepage (fallback)");
-
-            var builder = _httpClient.CreateRequestBuilder(BandcampBaseUrl, cookies);
-            var request = builder.Build();
-            var response = await _httpClient.ExecuteAsync(request);
-
-            var content = response.Content ?? string.Empty;
-
-            // Approach 1: Parse data-blob attribute (Bandcamp homepage format)
-            // The homepage embeds JSON in data-blob="..." on a div element
-            var blobMatch = DataBlobRegex.Match(content);
-            if (blobMatch.Success)
-            {
-                try
-                {
-                    // HTML-decode the blob content (it's double-encoded)
-                    var blobJson = System.Net.WebUtility.HtmlDecode(
-                        System.Net.WebUtility.HtmlDecode(blobMatch.Groups[1].Value));
-
-                    using var doc = JsonDocument.Parse(blobJson);
-                    var root = doc.RootElement;
-
-                    // Navigate: pageContext -> identity -> fanId
-                    if (root.TryGetProperty("pageContext", out var pageContext) &&
-                        pageContext.TryGetProperty("identity", out var identity) &&
-                        identity.TryGetProperty("fanId", out var fanIdEl))
-                    {
-                        if (fanIdEl.ValueKind == JsonValueKind.Number)
-                        {
-                            var fanId = fanIdEl.GetInt64();
-                            _logger.Debug("Bandcamp API: Resolved fan_id {0} from data-blob", fanId);
-                            return fanId;
-                        }
-
-                        if (fanIdEl.ValueKind == JsonValueKind.Null)
-                        {
-                            _logger.Debug("Bandcamp API: fan_id is null in data-blob — cookies may be invalid or expired");
-                            return null;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.Debug(ex, "Bandcamp API: Failed to parse data-blob JSON");
-                }
-            }
-
-            // Approach 2: Parse var pagedata (older/alternate Bandcamp page format)
-            var pagedataMatch = PagedataRegex.Match(content);
-            if (pagedataMatch.Success)
-            {
-                try
-                {
-                    using var doc = JsonDocument.Parse(pagedataMatch.Groups[1].Value);
-                    var root = doc.RootElement;
-
-                    // Check pageContext.identity.fanId (camelCase)
-                    if (root.TryGetProperty("pageContext", out var pageContext) &&
-                        pageContext.TryGetProperty("identity", out var identity) &&
-                        identity.TryGetProperty("fanId", out var fanIdEl) &&
-                        fanIdEl.ValueKind == JsonValueKind.Number)
-                    {
-                        var fanId = fanIdEl.GetInt64();
-                        _logger.Debug("Bandcamp API: Resolved fan_id {0} from pagedata", fanId);
-                        return fanId;
-                    }
-
-                    // Also check for fan_id (snake_case) in some page formats
-                    if (root.TryGetProperty("fan_id", out var fanIdSnake) &&
-                        fanIdSnake.ValueKind == JsonValueKind.Number)
-                    {
-                        return fanIdSnake.GetInt64();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.Debug(ex, "Bandcamp API: Failed to parse pagedata JSON");
-                }
-            }
-
-            _logger.Debug("Bandcamp API: Failed to resolve fan_id — no valid identity found in page");
-            return null;
+            var probe = await ProbeAuthAsync(cookies).ConfigureAwait(false);
+            return probe.FanId;
         }
 
         /// <summary>
         /// Preferred fan_id path: authenticated JSON API, no HTML scrape.
         /// </summary>
         internal async Task<long?> TryResolveFanIdFromCollectionSummaryAsync(string cookies)
+        {
+            var detailed = await TryResolveFanIdFromCollectionSummaryDetailedAsync(cookies).ConfigureAwait(false);
+            return detailed.FanId;
+        }
+
+        internal async Task<FanIdLookupResult> TryResolveFanIdFromCollectionSummaryDetailedAsync(string cookies)
         {
             try
             {
@@ -169,10 +153,26 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 var request = builder.Build();
                 var response = await _httpClient.ExecuteAsync(request);
                 var content = response.Content ?? string.Empty;
+                var status = response.StatusCode;
+
+                if (status == HttpStatusCode.Unauthorized)
+                {
+                    return FanIdLookupResult.Fail(BandcampAuthFailureKind.HttpUnauthorized, "HTTP 401 from collection_summary");
+                }
+
+                if (status == HttpStatusCode.Forbidden)
+                {
+                    return FanIdLookupResult.Fail(BandcampAuthFailureKind.HttpForbidden, "HTTP 403 from collection_summary");
+                }
+
+                if (BandcampIdentityAuth.LooksLikeChallengePage(content))
+                {
+                    return FanIdLookupResult.Fail(BandcampAuthFailureKind.ChallengePage, "challenge page from collection_summary");
+                }
 
                 if (string.IsNullOrWhiteSpace(content))
                 {
-                    return null;
+                    return FanIdLookupResult.Fail(BandcampAuthFailureKind.ExpiredOrRejected, "empty collection_summary body");
                 }
 
                 using var doc = JsonDocument.Parse(content);
@@ -183,7 +183,7 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 {
                     var fanId = fanIdEl.GetInt64();
                     _logger.Debug("Bandcamp API: Resolved fan_id {0} from collection_summary", fanId);
-                    return fanId;
+                    return FanIdLookupResult.Ok(fanId);
                 }
 
                 // Some responses nest under collection_summary
@@ -193,15 +193,143 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 {
                     var fanId = nestedFanId.GetInt64();
                     _logger.Debug("Bandcamp API: Resolved fan_id {0} from nested collection_summary", fanId);
-                    return fanId;
+                    return FanIdLookupResult.Ok(fanId);
                 }
+
+                return FanIdLookupResult.Fail(BandcampAuthFailureKind.ExpiredOrRejected, "collection_summary JSON had no fan_id");
+            }
+            catch (JsonException ex)
+            {
+                _logger.Debug(ex, "Bandcamp API: collection_summary was not JSON");
+                return FanIdLookupResult.Fail(BandcampAuthFailureKind.ExpiredOrRejected, "collection_summary was not JSON");
             }
             catch (Exception ex)
             {
                 _logger.Debug(ex, "Bandcamp API: collection_summary fan_id resolution failed");
+                return FanIdLookupResult.Fail(BandcampAuthFailureKind.NetworkError, ex.Message);
             }
+        }
 
-            return null;
+        internal async Task<FanIdLookupResult> TryResolveFanIdFromHomepageDetailedAsync(string cookies)
+        {
+            _logger.Debug("Bandcamp API: Resolving fan_id from homepage (fallback)");
+
+            try
+            {
+                var builder = _httpClient.CreateRequestBuilder(BandcampBaseUrl, cookies);
+                var request = builder.Build();
+                var response = await _httpClient.ExecuteAsync(request);
+                var content = response.Content ?? string.Empty;
+
+                if (response.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    return FanIdLookupResult.Fail(BandcampAuthFailureKind.HttpUnauthorized, "HTTP 401 from homepage");
+                }
+
+                if (response.StatusCode == HttpStatusCode.Forbidden)
+                {
+                    return FanIdLookupResult.Fail(BandcampAuthFailureKind.HttpForbidden, "HTTP 403 from homepage");
+                }
+
+                if (BandcampIdentityAuth.LooksLikeChallengePage(content))
+                {
+                    return FanIdLookupResult.Fail(BandcampAuthFailureKind.ChallengePage, "challenge page from homepage");
+                }
+
+                // Approach 1: Parse data-blob attribute (Bandcamp homepage format)
+                var blobMatch = DataBlobRegex.Match(content);
+                if (blobMatch.Success)
+                {
+                    try
+                    {
+                        var blobJson = System.Net.WebUtility.HtmlDecode(
+                            System.Net.WebUtility.HtmlDecode(blobMatch.Groups[1].Value));
+
+                        using var doc = JsonDocument.Parse(blobJson);
+                        var root = doc.RootElement;
+
+                        if (root.TryGetProperty("pageContext", out var pageContext) &&
+                            pageContext.TryGetProperty("identity", out var identity) &&
+                            identity.TryGetProperty("fanId", out var fanIdEl))
+                        {
+                            if (fanIdEl.ValueKind == JsonValueKind.Number)
+                            {
+                                var fanId = fanIdEl.GetInt64();
+                                _logger.Debug("Bandcamp API: Resolved fan_id {0} from data-blob", fanId);
+                                return FanIdLookupResult.Ok(fanId);
+                            }
+
+                            if (fanIdEl.ValueKind == JsonValueKind.Null)
+                            {
+                                _logger.Debug("Bandcamp API: fan_id is null in data-blob — cookies may be invalid or expired");
+                                return FanIdLookupResult.Fail(BandcampAuthFailureKind.ExpiredOrRejected, "fanId null in data-blob");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Debug(ex, "Bandcamp API: Failed to parse data-blob JSON");
+                    }
+                }
+
+                // Approach 2: Parse var pagedata (older/alternate Bandcamp page format)
+                var pagedataMatch = PagedataRegex.Match(content);
+                if (pagedataMatch.Success)
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(pagedataMatch.Groups[1].Value);
+                        var root = doc.RootElement;
+
+                        if (root.TryGetProperty("pageContext", out var pageContext) &&
+                            pageContext.TryGetProperty("identity", out var identity) &&
+                            identity.TryGetProperty("fanId", out var fanIdEl) &&
+                            fanIdEl.ValueKind == JsonValueKind.Number)
+                        {
+                            var fanId = fanIdEl.GetInt64();
+                            _logger.Debug("Bandcamp API: Resolved fan_id {0} from pagedata", fanId);
+                            return FanIdLookupResult.Ok(fanId);
+                        }
+
+                        if (root.TryGetProperty("fan_id", out var fanIdSnake) &&
+                            fanIdSnake.ValueKind == JsonValueKind.Number)
+                        {
+                            return FanIdLookupResult.Ok(fanIdSnake.GetInt64());
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Debug(ex, "Bandcamp API: Failed to parse pagedata JSON");
+                    }
+                }
+
+                _logger.Debug("Bandcamp API: Failed to resolve fan_id — no valid identity found in page");
+                return FanIdLookupResult.Fail(BandcampAuthFailureKind.ExpiredOrRejected, "no fan_id in homepage");
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Bandcamp API: homepage fan_id resolution failed");
+                return FanIdLookupResult.Fail(BandcampAuthFailureKind.NetworkError, ex.Message);
+            }
+        }
+
+        internal readonly struct FanIdLookupResult
+        {
+            public long? FanId { get; init; }
+            public BandcampAuthFailureKind FailureKind { get; init; }
+            public string? Detail { get; init; }
+
+            public static FanIdLookupResult Ok(long fanId) => new()
+            {
+                FanId = fanId,
+                FailureKind = BandcampAuthFailureKind.None
+            };
+
+            public static FanIdLookupResult Fail(BandcampAuthFailureKind kind, string detail) => new()
+            {
+                FailureKind = kind,
+                Detail = detail
+            };
         }
 
         /// <summary>

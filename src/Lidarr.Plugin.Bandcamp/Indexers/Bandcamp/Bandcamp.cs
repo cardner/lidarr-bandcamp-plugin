@@ -8,6 +8,7 @@ using FluentValidation.Results;
 using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
+using NzbDrone.Core.Auth.Bandcamp;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Download.Clients.Bandcamp;
 using NzbDrone.Core.IndexerSearch.Definitions;
@@ -95,25 +96,25 @@ namespace NzbDrone.Core.Indexers.Bandcamp
         /// </summary>
         protected override async Task<ValidationFailure> TestConnection()
         {
-            if (Settings.Cookies.IsNullOrWhiteSpace())
-            {
-                return new ValidationFailure("Cookies", "Bandcamp identity cookie is required for search.");
-            }
-
             try
             {
-                var fanId = await _apiClient.ResolveFanIdAsync(Settings.Cookies).ConfigureAwait(false);
-                if (fanId == null)
+                var probe = await _apiClient.ProbeAuthAsync(Settings.Cookies).ConfigureAwait(false);
+                if (!probe.Success || probe.FanId == null)
                 {
-                    return new ValidationFailure("Cookies", "Could not verify Bandcamp identity cookie.");
+                    return new ValidationFailure("Cookies", probe.Message);
                 }
 
-                var collection = await _apiClient.GetDownloadableCollectionAsync(Settings.Cookies, fanId.Value, maxPages: 1)
+                var collection = await _apiClient.GetDownloadableCollectionAsync(
+                        string.IsNullOrWhiteSpace(probe.NormalizedCookies) ? Settings.Cookies : probe.NormalizedCookies,
+                        probe.FanId.Value,
+                        maxPages: 1)
                     .ConfigureAwait(false);
 
                 if (collection.Empty())
                 {
-                    return new ValidationFailure(string.Empty, "Bandcamp authentication worked, but no downloadable purchases were found in the collection.");
+                    return new ValidationFailure(
+                        "Cookies",
+                        BandcampIdentityAuth.DescribeFailure(BandcampAuthFailureKind.EmptyCollection));
                 }
 
                 _logger.Debug("Bandcamp indexer: Collection test passed with {0} downloadable item(s)", collection.Count);
@@ -122,7 +123,9 @@ namespace NzbDrone.Core.Indexers.Bandcamp
             catch (Exception ex)
             {
                 _logger.Warn(ex, "Bandcamp indexer collection test failed");
-                return new ValidationFailure(string.Empty, "Unable to connect to Bandcamp indexer. " + ex.Message);
+                return new ValidationFailure(
+                    "Cookies",
+                    BandcampIdentityAuth.DescribeFailure(BandcampAuthFailureKind.NetworkError, ex.Message));
             }
         }
 

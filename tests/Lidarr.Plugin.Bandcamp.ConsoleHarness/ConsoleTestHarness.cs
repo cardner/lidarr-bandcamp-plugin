@@ -1,157 +1,198 @@
 using System;
+using System.IO;
 using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using NLog;
-using NzbDrone.Common.Http;
-using NzbDrone.Core.Indexers;
-using NzbDrone.Core.Indexers.Bandcamp;
+using NzbDrone.Core.Download.Clients.Bandcamp;
+using NzbDrone.Core.Http.Bandcamp;
 
 namespace Lidarr.Plugin.Bandcamp.ConsoleHarness
 {
     /// <summary>
-    /// Console test harness for validating Bandcamp search against the real endpoint.
-    /// Usage: dotnet run -- [cookies]
-    /// Alternatively set BANDCAMP_COOKIES environment variable.
+    /// Live smoke harness against real Bandcamp (never run in CI without a secret).
+    ///
+    /// Env (preferred):
+    ///   BANDCAMP_IDENTITY_COOKIE  — bare identity value or full Cookie header
+    ///   BANDCAMP_COOKIES          — legacy alias for the same value
+    ///
+    /// Optional:
+    ///   BANDCAMP_LIVE_DOWNLOAD=1  — also download the first owned item to ./live-artifacts
+    ///   BANDCAMP_LIVE_FORMAT      — format key (default: flac)
+    ///
+    /// Usage:
+    ///   export BANDCAMP_IDENTITY_COOKIE='…'
+    ///   dotnet run --project tests/Lidarr.Plugin.Bandcamp.ConsoleHarness
     /// </summary>
     public static class Program
     {
-        private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
-
-        public static int Main(string[] args)
+        public static async Task<int> Main(string[] args)
         {
-            // Configure NLog for console output
             var config = new NLog.Config.LoggingConfiguration();
             var consoleTarget = new NLog.Targets.ConsoleTarget("console")
             {
                 Layout = "${time} [${level:uppercase=true}] ${message} ${exception:format=tostring}"
             };
             config.AddTarget(consoleTarget);
-            config.AddRule(NLog.LogLevel.Debug, NLog.LogLevel.Fatal, consoleTarget);
+            config.AddRule(LogLevel.Info, LogLevel.Fatal, consoleTarget);
             LogManager.Configuration = config;
 
-            // Get cookies from args or env
-            var cookies = args.Length > 0
-                ? args[0]
-                : Environment.GetEnvironmentVariable("BANDCAMP_COOKIES") ?? "";
+            var logger = LogManager.GetCurrentClassLogger();
+            var cookies = ResolveCookies(args);
 
             if (string.IsNullOrWhiteSpace(cookies))
             {
-                Console.WriteLine("Usage: dotnet run -- <cookies>");
-                Console.WriteLine("   Or: export BANDCAMP_COOKIES=<cookies>");
-                Console.WriteLine();
-                Console.WriteLine("Provide your Bandcamp session cookies (identity cookie).");
+                PrintUsage();
                 return 1;
             }
 
-            Console.WriteLine("=== Bandcamp Search Console Test Harness ===");
+            Console.WriteLine("=== Bandcamp live smoke (collection auth → list → optional download) ===");
+            Console.WriteLine($"Cookie input length: {cookies.Trim().Length} chars (value not printed)");
             Console.WriteLine();
 
-            try
+            using var native = new BandcampNativeHttp(logger);
+            // Native-backed client: browser UA never touches Lidarr ManagedHttpDispatcher.
+            var http = new BandcampHttpClient(native, logger);
+            var api = new BandcampApiClient(http, logger);
+
+            var probe = await api.ProbeAuthAsync(cookies).ConfigureAwait(false);
+            if (!probe.Success || probe.FanId == null)
             {
-                return TestSearch(cookies);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FATAL: {ex.Message}");
-                Logger.Error(ex, "Unhandled exception");
+                Console.WriteLine("AUTH FAILED");
+                Console.WriteLine(probe.Message);
                 return 2;
             }
-        }
 
-        private static int TestSearch(string cookies)
-        {
-            var searchTerm = "radiohead";
-            var url = $"https://bandcamp.com/search?q={searchTerm}&item_type=a";
-            Console.WriteLine($"Search URL: {url}");
-            Console.WriteLine($"Cookie length: {cookies.Length} chars");
-            Console.WriteLine();
+            Console.WriteLine($"AUTH OK — fan_id={probe.FanId}");
+            var normalized = probe.NormalizedCookies;
 
-            // Use raw HttpClient for the test
-            using var handler = new HttpClientHandler
+            var items = await api.GetDownloadableCollectionAsync(normalized, probe.FanId.Value, maxPages: 2)
+                .ConfigureAwait(false);
+
+            Console.WriteLine($"COLLECTION — {items.Count} downloadable item(s) on first page(s)");
+            foreach (var item in items.Take(10))
             {
-                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-            };
-            using var client = new System.Net.Http.HttpClient(handler);
+                Console.WriteLine($"  - {item.BandName} / {item.Title} ({item.ItemType}:{item.ItemId})");
+                if (!string.IsNullOrWhiteSpace(item.ItemUrl))
+                {
+                    Console.WriteLine($"      {item.ItemUrl}");
+                }
+            }
 
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add("Cookie", cookies);
-            request.Headers.Add("User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-            request.Headers.Add("Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-            request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
-
-            Console.WriteLine("Sending request...");
-            var response = client.SendAsync(request).Result;
-            var content = response.Content.ReadAsStringAsync().Result;
-
-            Console.WriteLine($"Response status: {(int)response.StatusCode} {response.StatusCode}");
-            Console.WriteLine($"Response length: {content.Length} chars");
-            Console.WriteLine();
-
-            // Show first 500 chars
-            Console.WriteLine("--- First 500 chars ---");
-            Console.WriteLine(content.Substring(0, Math.Min(500, content.Length)));
-            Console.WriteLine("--- End ---");
-            Console.WriteLine();
-
-            // Detect JS challenge page
-            if (content.Contains("cf-challenge") || content.Contains("challenge-platform") ||
-                content.Contains("Just a moment") || content.Contains("Checking your browser"))
+            if (items.Count == 0)
             {
-                Console.WriteLine("⚠️  WARNING: Response appears to be a JS challenge page (Cloudflare).");
-                Console.WriteLine("   This typically means the cookies are invalid or expired.");
-                Console.WriteLine("   Try exporting fresh cookies from your browser.");
+                Console.WriteLine("No downloadable purchases found. Auth worked; collection may be empty.");
                 return 3;
             }
 
-            // Check for searchresult blocks
-            var resultCount = Regex.Matches(content, @"class=""searchresult").Count;
-            Console.WriteLine($"Search result blocks found: {resultCount}");
+            var doDownload = string.Equals(
+                Environment.GetEnvironmentVariable("BANDCAMP_LIVE_DOWNLOAD"),
+                "1",
+                StringComparison.OrdinalIgnoreCase);
 
-            if (resultCount == 0)
+            if (!doDownload)
             {
-                Console.WriteLine("No searchresult blocks found in response.");
-                Console.WriteLine("This could mean:");
-                Console.WriteLine("  1. Bandcamp changed their HTML structure");
-                Console.WriteLine("  2. Cookies are not valid");
-                Console.WriteLine("  3. Search endpoint returned unexpected format");
+                Console.WriteLine();
+                Console.WriteLine("Skip download (set BANDCAMP_LIVE_DOWNLOAD=1 to fetch the first owned release).");
+                Console.WriteLine("=== Smoke OK (auth + collection list) ===");
+                return 0;
+            }
+
+            var target = items.First(i => !string.IsNullOrWhiteSpace(i.DownloadPageUrl));
+            var format = Environment.GetEnvironmentVariable("BANDCAMP_LIVE_FORMAT");
+            if (string.IsNullOrWhiteSpace(format))
+            {
+                format = "flac";
+            }
+
+            var outDir = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "live-artifacts"));
+            Directory.CreateDirectory(outDir);
+
+            Console.WriteLine();
+            Console.WriteLine($"DOWNLOAD — {target.BandName} / {target.Title} format={format}");
+            Console.WriteLine($"Output dir: {outDir}");
+
+            var page = await api.GetDownloadPageDataAsync(normalized, target.DownloadPageUrl!).ConfigureAwait(false);
+            if (page == null || page.DownloadItems.Count == 0)
+            {
+                Console.WriteLine("Could not parse download page data.");
                 return 4;
             }
 
-            // Parse with our parser
-            Console.WriteLine();
-            Console.WriteLine("--- Parsing with BandcampParser ---");
+            var downloadItem = page.DownloadItems.FirstOrDefault(i => i.ItemId == target.ItemId)
+                               ?? page.DownloadItems.First();
 
-            var settings = new BandcampIndexerSettings { Cookies = cookies };
-            var logger = LogManager.GetCurrentClassLogger();
-            var parser = new BandcampParser(settings, logger);
-
-            var httpRequest = new NzbDrone.Common.Http.HttpRequest(url);
-            var httpResponse = new HttpResponse(httpRequest, new HttpHeader(), content);
-            var indexerRequest = new IndexerRequest(httpRequest);
-            var indexerResponse = new IndexerResponse(indexerRequest, httpResponse);
-
-            var results = parser.ParseResponse(indexerResponse);
-
-            Console.WriteLine($"Parser returned {results.Count} results:");
-            Console.WriteLine();
-
-            foreach (var release in results)
+            if (!downloadItem.DownloadUrls.TryGetValue(format!, out var formatUrl) ||
+                string.IsNullOrWhiteSpace(formatUrl))
             {
-                Console.WriteLine($"  Title:  {release.Title}");
-                Console.WriteLine($"  Artist: {release.Artist}");
-                Console.WriteLine($"  Album:  {release.Album}");
-                Console.WriteLine($"  Date:   {release.PublishDate:yyyy-MM-dd}");
-                Console.WriteLine($"  URL:    {release.InfoUrl}");
-                Console.WriteLine($"  Size:   {release.Size / (1024.0 * 1024.0):F1} MB");
-                Console.WriteLine();
+                format = downloadItem.DownloadUrls.Keys.FirstOrDefault() ?? format;
+                downloadItem.DownloadUrls.TryGetValue(format!, out formatUrl);
             }
 
-            Console.WriteLine($"=== Test complete: {results.Count} results parsed ===");
-            return results.Count > 0 ? 0 : 5;
+            if (string.IsNullOrWhiteSpace(formatUrl))
+            {
+                Console.WriteLine("No download URL for any format on this purchase.");
+                return 5;
+            }
+
+            var resolved = await api.ResolveStatdownloadUrlAsync(normalized, formatUrl!, format!).ConfigureAwait(false);
+            byte[]? payload = null;
+            string? fileUrl = null;
+
+            if (resolved?.DirectResponse?.ResponseData is { Length: > 0 } directBytes)
+            {
+                payload = directBytes;
+            }
+            else
+            {
+                fileUrl = resolved?.DownloadUrl ?? formatUrl!;
+                Console.WriteLine($"Resolved file URL host: {new Uri(fileUrl).Host}");
+                var bytes = await native.GetBytesAsync(fileUrl, normalized).ConfigureAwait(false);
+                if (bytes.RawBytes == null || bytes.RawBytes.Length == 0)
+                {
+                    Console.WriteLine($"Download failed with HTTP {bytes.StatusCode}");
+                    return 6;
+                }
+
+                payload = bytes.RawBytes;
+            }
+
+            var safeName = string.Join("_", $"{target.BandName}-{target.Title}".Split(Path.GetInvalidFileNameChars()));
+            var path = Path.Combine(outDir, $"{safeName}.zip");
+            await File.WriteAllBytesAsync(path, payload!).ConfigureAwait(false);
+
+            Console.WriteLine($"Wrote {payload!.Length} bytes → {path}");
+            Console.WriteLine("=== Smoke OK (auth + collection + download) ===");
+            return 0;
+        }
+
+        private static string ResolveCookies(string[] args)
+        {
+            if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]))
+            {
+                return args[0];
+            }
+
+            return Environment.GetEnvironmentVariable("BANDCAMP_IDENTITY_COOKIE")
+                   ?? Environment.GetEnvironmentVariable("BANDCAMP_COOKIES")
+                   ?? string.Empty;
+        }
+
+        private static void PrintUsage()
+        {
+            Console.WriteLine("Bandcamp live smoke harness");
+            Console.WriteLine();
+            Console.WriteLine("Set one of:");
+            Console.WriteLine("  BANDCAMP_IDENTITY_COOKIE   preferred (bare identity or Cookie header)");
+            Console.WriteLine("  BANDCAMP_COOKIES           legacy alias");
+            Console.WriteLine("Or pass the cookie as argv[0].");
+            Console.WriteLine();
+            Console.WriteLine("Optional:");
+            Console.WriteLine("  BANDCAMP_LIVE_DOWNLOAD=1   download first owned release");
+            Console.WriteLine("  BANDCAMP_LIVE_FORMAT=flac  format key");
+            Console.WriteLine();
+            Console.WriteLine("Example:");
+            Console.WriteLine("  export BANDCAMP_IDENTITY_COOKIE='…from browser DevTools…'");
+            Console.WriteLine("  dotnet run --project tests/Lidarr.Plugin.Bandcamp.ConsoleHarness");
         }
     }
 }

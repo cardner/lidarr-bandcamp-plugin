@@ -39,17 +39,20 @@ Copy `src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0/Lidarr.Plugin.Bandcamp.dll` 
 
 ## Auth (Identity Cookie)
 
-Bandcamp does not offer fan OAuth for personal libraries. Auth is the same `identity` cookie your browser uses after login.
+Bandcamp does **not** offer fan OAuth for personal libraries. The only credential is the browser `identity` cookie. Auto-refresh is not possible — when Test fails or downloads stop authenticating, re-export from DevTools.
 
 1. Log into [bandcamp.com](https://bandcamp.com)
 2. Open DevTools (`F12`)
    - **Chrome:** Application → Cookies → `https://bandcamp.com` → copy **`identity`**
    - **Firefox:** Storage → Cookies → `https://bandcamp.com` → copy **`identity`**
 3. Paste into the plugin’s **Identity Cookie** field (indexer and download client)
-   - Bare value is fine (e.g. `a1B2c3…`)
+   - Bare value is preferred (e.g. `a1B2c3…`)
    - Or paste `identity=…` / a full Cookie header
+4. Click **Test** — errors now distinguish missing/wrong-shape cookies, expired sessions, bot challenges, and HTTP 401/403, and tell you to re-export
 
-The cookie expires. When Test / downloads fail with auth errors, export a fresh one.
+### Live smoke (optional)
+
+See [docs/live-testing.md](docs/live-testing.md). Set `BANDCAMP_IDENTITY_COOKIE` and run the console harness. CI never requires this secret.
 
 ## Lidarr setup
 
