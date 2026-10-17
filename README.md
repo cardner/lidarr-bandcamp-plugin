@@ -17,13 +17,18 @@ Requires Lidarr **3.1.2.4938+** on the `develop`, `nightly`, or `plugins` branch
 
 ## Install
 
-### From a GitHub release (preferred once published)
+### From a GitHub release (preferred)
+
+Lidarr’s plugin installer needs a **public GitHub** URL with release zip assets. Origin alone is not enough.
+
+**Public mirror:** [https://github.com/cardner/lidarr-bandcamp-plugin](https://github.com/cardner/lidarr-bandcamp-plugin)  
+Sync steps: [docs/github-mirror.md](docs/github-mirror.md)
 
 1. In Lidarr: **System → Plugins**
-2. Paste this repository’s **GitHub** URL
+2. Paste: `https://github.com/cardner/lidarr-bandcamp-plugin`
 3. **Install**, then restart Lidarr when prompted
 
-> Lidarr’s plugin installer expects a **GitHub** URL with release assets. Until this project is published to GitHub, use the local DLL path below.
+> Needs a GitHub **Release** with the plugin zip (`v*` tag). Until the first push/tag lands, use the local DLL path below.
 
 ### From a local build
 

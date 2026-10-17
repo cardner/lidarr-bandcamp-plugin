@@ -9,9 +9,9 @@ namespace NzbDrone.Core.Plugins
         public override string Name => "Bandcamp Library";
         public override string Owner => "cursor-project";
         /// <summary>
-        /// Publish this repository to GitHub, then set this URL so Lidarr's
-        /// System → Plugins installer can pull releases from it.
+        /// Public GitHub mirror for Lidarr System → Plugins (Origin is source of truth;
+        /// sync with scripts/mirror-to-github.sh — see docs/github-mirror.md).
         /// </summary>
-        public override string GithubUrl => "https://github.com/cursor-project/lidarr-plugin-bandcamp-library";
+        public override string GithubUrl => "https://github.com/cardner/lidarr-bandcamp-plugin";
     }
 }
