@@ -42,7 +42,7 @@ if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
 ERROR: git remote '$REMOTE' is not configured.
 
 One-time setup (see docs/github-mirror.md):
-  git remote add github https://github.com/YOUR_GITHUB_USER/lidarr-bandcamp-plugin.git
+  git remote add github https://github.com/cardner/lidarr-bandcamp-plugin.git
 EOF
   exit 1
 fi

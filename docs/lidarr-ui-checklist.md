@@ -59,7 +59,7 @@ Compose mounts `artifacts/plugin` into `/config/plugins/cursor-project/Lidarr.Pl
 
 Only after the **public GitHub mirror** has a release zip (Origin alone is not enough). See [github-mirror.md](github-mirror.md).
 
-1. Paste `https://github.com/YOUR_GITHUB_USER/lidarr-bandcamp-plugin` into **System → Plugins**
+1. Paste `https://github.com/cardner/lidarr-bandcamp-plugin` into **System → Plugins**
 2. **Install**, restart when prompted
 3. Confirm **Bandcamp Library** is listed once
 
