@@ -1,0 +1,30 @@
+# Lidarr nightly + Bandcamp Library plugin (DLL bind-mount).
+# Requires Docker on the host. This Cloud Agent VM has no Docker daemon.
+#
+# Usage:
+#   ./scripts/build-plugin.sh
+#   docker compose -f docker/docker-compose.lidarr.yml up -d
+#   open http://127.0.0.1:8686
+#
+# Plugin path inside the container matches Lidarr's expected layout:
+#   /config/plugins/<owner>/<folder>/Lidarr.Plugin.*.dll
+
+services:
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:nightly
+    container_name: lidarr-bandcamp-e2e
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    ports:
+      - "8686:8686"
+    volumes:
+      - lidarr-config:/config
+      - ./lidarr-downloads:/downloads
+      # Single plugin install — do not mount the same DLL twice
+      - ../artifacts/plugin:/config/plugins/cursor-project/Lidarr.Plugin.Bandcamp:ro
+    restart: unless-stopped
+
+volumes:
+  lidarr-config:
