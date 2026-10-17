@@ -53,13 +53,20 @@ dotnet test tests/Lidarr.Plugin.Bandcamp.Test -c Release --filter "FullyQualifie
 
 ## Lidarr UI checklist (manual E2E)
 
-1. Lidarr ≥ 3.1.2.4938 on develop/nightly/plugins; install this plugin DLL; restart
-2. **Settings → Indexers → Bandcamp** — paste Identity Cookie → **Test** → Save
-3. **Settings → Download Clients → Bandcamp** — same cookie + writable Download Path → **Test** → Save
-4. **Settings → Profiles → Delay Profiles** — enable **Bandcamp** protocol
-5. Search an artist/album you own on Bandcamp; grab a release not already on disk
-6. Confirm files appear in Download Path and Lidarr imports them
+Full step-by-step (install DLL, indexer, download client, Delay Profile, search, grab, failure modes, API bootstrap):
+
+→ **[docs/lidarr-ui-checklist.md](lidarr-ui-checklist.md)**
+
+Quick path:
+
+1. Build DLL (`./scripts/build-plugin.sh`) and install under `plugins/cursor-project/Lidarr.Plugin.Bandcamp/` (**one** copy only)
+2. Restart Lidarr → **System → Plugins** shows **Bandcamp Library**
+3. Indexer + Download Client: paste **Identity Cookie** → **Test** → Save
+4. Delay Profiles → enable **Bandcamp**
+5. Search/grab an owned album not on disk; confirm Download Path + import
+
+Helpers: `docker/docker-compose.lidarr.yml`, `scripts/run-lidarr-local.sh`, `scripts/lidarr-api-bootstrap.sh`.
 
 ### What Ryan must supply for live E2E
 
-A fresh Bandcamp `identity` cookie from a logged-in browser session (and, for Lidarr UI E2E, a running Lidarr nightly with this plugin installed). No other secrets.
+A fresh Bandcamp `identity` cookie (`BANDCAMP_IDENTITY_COOKIE`) and either a running Lidarr nightly or use the scripts above. No other secrets.
