@@ -1,5 +1,11 @@
 name: Build and Release Plugin
 
+# Builds Lidarr.Plugin.Bandcamp and, on v* tags, publishes a GitHub Release
+# with Lidarr.Plugin.Bandcamp.net8.0.zip for Lidarr System → Plugins.
+#
+# Requires this workflow on the *GitHub* remote (Origin → GitHub mirror).
+# See docs/github-mirror.md.
+
 on:
   push:
     branches:
@@ -9,6 +15,9 @@ on:
       - 'v*'
   pull_request:
   workflow_dispatch:
+  # Re-run publish when a Release is created manually for an existing tag
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -17,7 +26,8 @@ env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   PLUGIN_NAME: Lidarr.Plugin.Bandcamp
-  DOTNET_VERSION: '10.0.103'
+  # SDK used to compile the net8.0 plugin (newer SDK is fine)
+  DOTNET_VERSION: '8.0.x'
   # AssemblyVersion pinned to a LOW major version for cross-version compatibility.
   # Lidarr uses non-deterministic 10.0.0.* which changes every build. .NET's assembly
   # binding requires an EXACT version match when the major version component is the same
@@ -52,33 +62,36 @@ jobs:
           # ALC when it can't resolve the assembly. The default ALC has Lidarr.Core loaded at
           # 10.0.0.XXXX. When our plugin references 2.0.0.0, .NET resolves by simple name
           # (Lidarr.Core) without strict version matching because the major versions differ.
-          # When we referenced 10.0.0.4200, .NET required an exact match and silently failed.
           sed -i'' -e "s/<AssemblyVersion>10\.0\.0\.\*<\/AssemblyVersion>/<AssemblyVersion>${{ env.LIDARR_ASSEMBLY_VERSION }}<\/AssemblyVersion>/g" ext/Lidarr/src/Directory.Build.props
           echo "Pinned Lidarr AssemblyVersion to ${{ env.LIDARR_ASSEMBLY_VERSION }}"
           grep AssemblyVersion ext/Lidarr/src/Directory.Build.props
+
+      - name: Resolve package version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+            echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Restore dependencies
         run: dotnet restore Lidarr.Plugin.Bandcamp.slnx -p:TreatWarningsAsErrors=false
 
       - name: Build
         run: |
-          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
-            VERSION_ARG="-p:Version=${GITHUB_REF_NAME#v}"
-          else
-            VERSION_ARG="-p:Version=0.0.0-ci.${GITHUB_RUN_NUMBER}"
-          fi
-
-          dotnet build Lidarr.Plugin.Bandcamp.slnx -c Release --no-restore -p:TreatWarningsAsErrors=false "$VERSION_ARG"
+          dotnet build Lidarr.Plugin.Bandcamp.slnx -c Release --no-restore \
+            -p:TreatWarningsAsErrors=false \
+            -p:Version=${{ steps.ver.outputs.version }}
 
       - name: Run tests
         run: |
-          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
-            VERSION_ARG="-p:Version=${GITHUB_REF_NAME#v}"
-          else
-            VERSION_ARG="-p:Version=0.0.0-ci.${GITHUB_RUN_NUMBER}"
-          fi
-
-          dotnet test Lidarr.Plugin.Bandcamp.slnx --no-build -c Release --filter "FullyQualifiedName~Bandcamp" "$VERSION_ARG"
+          dotnet test Lidarr.Plugin.Bandcamp.slnx --no-build -c Release \
+            --filter "FullyQualifiedName~Bandcamp" \
+            -p:Version=${{ steps.ver.outputs.version }}
 
       - name: Verify plugin DLL
         run: |
@@ -91,30 +104,35 @@ jobs:
           cd src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0
           zip "${{ github.workspace }}/${{ env.PLUGIN_NAME }}.net8.0.zip" \
             "${{ env.PLUGIN_NAME }}.dll"
-          echo "Created ${{ env.PLUGIN_NAME }}.net8.0.zip"
           ls -la "${{ github.workspace }}/${{ env.PLUGIN_NAME }}.net8.0.zip"
 
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.PLUGIN_NAME }}.net8.0
-          path: src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0/${{ env.PLUGIN_NAME }}.dll
+          path: |
+            ${{ env.PLUGIN_NAME }}.net8.0.zip
+            src/Lidarr.Plugin.Bandcamp/bin/Release/net8.0/${{ env.PLUGIN_NAME }}.dll
 
       - name: Generate changelog
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
         run: |
           echo "## Changelog" > changelog.txt
-          git log --oneline $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")..HEAD | \
+          git log --oneline "$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")"..HEAD | \
             awk '{print "- " substr($0, index($0,$2))}' >> changelog.txt || true
           cat changelog.txt
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # Creates the Release on tag push, or uploads/updates assets when a Release
+      # already exists for that tag (softprops updates in place).
+      - name: Publish GitHub Release zip
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
           generate_release_notes: true
           body_path: changelog.txt
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
           files: |
             ${{ env.PLUGIN_NAME }}.net8.0.zip
