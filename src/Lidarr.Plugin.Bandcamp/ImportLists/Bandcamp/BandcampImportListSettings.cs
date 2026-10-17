@@ -28,8 +28,8 @@ namespace NzbDrone.Core.ImportLists.Bandcamp
             Label = "Identity Cookie",
             Type = FieldType.Password,
             HelpText = BandcampIdentityAuth.FieldHelpText +
-                " List sync only adds albums MusicBrainz can resolve. " +
-                "Also enable Automatic Add + Search for New Items on this list, and Bandcamp in Delay Profiles. " +
+                " List sync pre-resolves MusicBrainz IDs (skips SkyHook failures per album). " +
+                "Enable Automatic Add + Search for New Items, and Bandcamp in Delay Profiles. " +
                 "Indexer RSS will not add library albums by itself.",
             Privacy = PrivacyLevel.Password)]
         public string Cookies { get; set; } = "";

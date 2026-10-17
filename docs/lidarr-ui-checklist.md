@@ -120,9 +120,11 @@ Without this step, searches never grab Bandcamp results.
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| List sync “processed N items”, album still missing | SkyHook/MB 500 or no match | Logs: `SkyHookProxy` / HTTP 500. Retry later or **manual Add** by MBID/name |
+| List sync “processed N items”, album still missing | SkyHook/MB 500 or no match (older builds aborted the whole sync on one 500) | Install build with Import List MB pre-resolve. Logs: `Bandcamp import list: candidates=… mapped=… skyhookErrors=…`. Retry later or **manual Add** |
 | Album in Lidarr, no download | Search for New Items off; Delay Profile; RSS off | Enable Search; enable Bandcamp protocol; Enable RSS on indexer |
 | Expecting RSS alone to add new artists | Pseudo-RSS only matches monitored library | Use Import List (or manual add) first |
+
+After a successful list add with Search on Add, Lidarr runs missing-album search for that artist — Bandcamp indexer must be enabled and the Bandcamp protocol must be on in Delay Profiles.
 
 New artists appear only after MusicBrainz can resolve the Bandcamp title. Pseudo-RSS then grabs later purchases for already-monitored artists.
 

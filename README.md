@@ -97,7 +97,7 @@ Local helpers: `./scripts/build-plugin.sh`, `./scripts/run-lidarr-local.sh`, `do
 - **Search for New Items** — **on** (Lidarr UI often leaves this off; without it, albums can be added but never searched/downloaded)
 - **Test**, then **Save**, then click **Refresh** once
 
-List sync is intentionally slow (≥ 6h). Bandcamp-only releases / SkyHook-MusicBrainz failures will **not** auto-add — check Lidarr logs for `SkyHook` / `500` / “Unable to communicate”. Those titles need a manual Add Artist/Album (or retry when SkyHook is healthy). Indexer **Enable RSS** only grabs for albums **already** in Lidarr.
+List sync is intentionally slow (≥ 6h). Current builds **pre-resolve** MusicBrainz IDs in the list (per-album SkyHook errors are skipped so one Boomtown 500 does not abort the whole sync). Check logs for `Bandcamp import list: candidates=… mapped=… skyhookErrors=…`. Unmapped / Bandcamp-only titles still need manual Add. Indexer **Enable RSS** only grabs albums **already** in Lidarr. After add + Search on Add, Delay Profile must allow the Bandcamp protocol.
 
 ### 4. Delay profile (required)
 
