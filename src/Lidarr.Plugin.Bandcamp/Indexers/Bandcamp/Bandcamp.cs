@@ -32,6 +32,8 @@ namespace NzbDrone.Core.Indexers.Bandcamp
 
         public override string Name => "Bandcamp";
         public override string Protocol => nameof(BandcampDownloadProtocol);
+        // Intentional: library indexing uses authenticated collection search only.
+        // Bandcamp has no fan RSS feed for purchases; enabling RSS would poll an empty/unsupported path.
         public override bool SupportsRss => false;
         public override bool SupportsSearch => true;
         public override int PageSize => 50;

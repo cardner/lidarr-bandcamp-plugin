@@ -80,7 +80,8 @@ Local helpers: `./scripts/build-plugin.sh`, `./scripts/run-lidarr-local.sh`, `do
 
 - Same **Identity Cookie**
 - **Download Path** Lidarr can write (e.g. `/downloads/bandcamp`)
-- **Test**, then **Save**
+  - Docker linuxserver/hotio: the volume is usually mounted at **`/downloads`** — use `/downloads/bandcamp`, not `/downloads/downloads` unless that nested folder exists on purpose. Details: [docs/docker-download-path.md](docs/docker-download-path.md)
+- **Test**, then **Save** (Test creates the folder if needed and fails clearly when it is not writable)
 
 ### 3. Delay profile (required)
 
@@ -107,6 +108,8 @@ FLAC, ALAC, WAV, AIFF, MP3 V0, MP3 320, OGG Vorbis, AAC — Lidarr picks from yo
 | `User-Agent other than Lidarr not allowed` | This plugin registers a Bandcamp HTTP path that allows a browser UA. Rebuild/reinstall this build; do not strip the dispatcher / native HTTP client. |
 | Auth / Test fails | Re-export `identity` from a logged-in browser session |
 | Search returns nothing | Confirm the album is in your Bandcamp collection and the Bandcamp protocol is enabled in Delay Profiles |
+| Queue: Download Failed (empty / path) | Check Download Path; Docker often needs `/downloads/bandcamp` not `/downloads/downloads`. See [docs/docker-download-path.md](docs/docker-download-path.md) |
+| RSS not supported | Intentional — Bandcamp library indexing is search-only (`SupportsRss=false`); no fan purchase RSS feed |
 | Plugin missing | Lidarr must be ≥ 3.1.2.4938 on develop/nightly/plugins; restart after install |
 
 ## Development

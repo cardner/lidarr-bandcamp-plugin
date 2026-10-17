@@ -80,9 +80,18 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             var downloadId = Guid.NewGuid().ToString("N");
             var retagContext = BuildRetagContext(remoteAlbum);
 
+            // Fail fast with a Queue-visible message when the configured root is missing/unwritable
+            // (common Docker misconfig: /downloads/downloads when only /downloads is mounted).
+            var pathError = BandcampPathGuard.EnsureWritable(_diskProvider, Settings.DownloadPath, _logger);
+            if (pathError != null)
+            {
+                _logger.Error("Bandcamp download client: Refusing grab — {0}", pathError);
+                throw new DownloadException(pathError);
+            }
+
             // Build a unique working directory under the configured download root so retries
             // and concurrent grabs never delete or overwrite each other's extracted files.
-            var downloadPath = Settings.DownloadPath;
+            var downloadPath = BandcampPathGuard.Normalize(Settings.DownloadPath);
             var folderTitle = retagContext != null
                 ? $"{retagContext.ArtistName} - {retagContext.AlbumTitle}"
                 : title;
@@ -101,7 +110,7 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
 
             await _taskQueue.EnqueueAsync(item).ConfigureAwait(false);
 
-            _logger.Debug("Bandcamp download client: Enqueued download {0} for '{1}' -> {2}",
+            _logger.Info("Bandcamp download client: Enqueued download {0} for '{1}' -> {2}",
                 downloadId, title, outputPath);
 
             return downloadId;
@@ -209,53 +218,21 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 _logger.Debug(ex, "Bandcamp download client: Cookie auth test threw exception");
             }
 
-            // Test download path — create it if needed, then verify it is writable.
-            if (!EnsureDownloadPathExists(failures))
+            // Test download path — create if needed, prove writable, warn on doubled Docker paths.
+            var pathError = BandcampPathGuard.EnsureWritable(_diskProvider, Settings.DownloadPath, _logger);
+            if (pathError != null)
             {
-                return;
-            }
-
-            var pathFailure = TestFolder(Settings.DownloadPath, "DownloadPath", mustBeWritable: true);
-            if (pathFailure != null)
-            {
-                failures.Add(pathFailure);
+                failures.Add(new ValidationFailure("DownloadPath", pathError));
             }
             else
             {
-                _logger.Debug("Bandcamp download client: Download path test passed");
-            }
-        }
-
-        /// <summary>
-        /// Creates the configured root download path if it does not already exist.
-        /// This mirrors the behavior users expect from local download clients: a
-        /// missing child folder under an existing mounted path should be created
-        /// instead of failing validation with "Folder does not exist".
-        /// </summary>
-        private bool EnsureDownloadPathExists(List<ValidationFailure> failures)
-        {
-            if (string.IsNullOrWhiteSpace(Settings.DownloadPath))
-            {
-                failures.Add(new ValidationFailure("DownloadPath", "Download path is required"));
-                return false;
+                _logger.Debug("Bandcamp download client: Download path test passed for '{0}'", Settings.DownloadPath);
             }
 
-            if (_diskProvider.FolderExists(Settings.DownloadPath))
+            var doubledWarning = BandcampPathGuard.SuspiciousPathWarning(Settings.DownloadPath);
+            if (doubledWarning != null)
             {
-                return true;
-            }
-
-            try
-            {
-                _logger.Debug("Bandcamp download client: Creating missing download path '{0}'", Settings.DownloadPath);
-                _diskProvider.CreateFolder(Settings.DownloadPath);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.Warn(ex, "Bandcamp download client: Failed to create download path '{0}'", Settings.DownloadPath);
-                failures.Add(new ValidationFailure("DownloadPath", "Unable to create download path: " + ex.Message));
-                return false;
+                failures.Add(doubledWarning);
             }
         }
 

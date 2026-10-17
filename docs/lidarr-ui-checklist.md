@@ -85,8 +85,9 @@ Only after the **public GitHub mirror** has a release zip (Origin alone is not e
 1. **Settings → Download Clients → +**
 2. Under **Other**, select **Bandcamp**
 3. **Identity Cookie:** same value as indexer
-4. **Download Path:** folder Lidarr can write (e.g. `/downloads/bandcamp` or `/data/bandcamp`)
-5. **Test** → green check → **Save**
+4. **Download Path:** folder Lidarr can write (e.g. `/downloads/bandcamp`)
+   - linuxserver/hotio: mount is usually `/downloads` — prefer `/downloads/bandcamp`; avoid `/downloads/downloads` unless nested on purpose ([docker-download-path.md](docker-download-path.md))
+5. **Test** → green check → **Save** (failure should name the path: not creatable / not writable; doubled path may warn)
 
 ---
 
@@ -132,6 +133,8 @@ Without this step, searches never grab Bandcamp results.
 | Test: User-Agent other than Lidarr not allowed | Old plugin / dispatcher stripped | Use this build (≥ auth PR) |
 | Search empty | Protocol off / not owned | Enable Bandcamp in Delay Profile; verify purchase |
 | Grab fails mid-download | Cookie expired during transfer | Re-export; re-Test download client |
+| Queue: Download Failed + empty tooltip | Old plugin build / path write failed silently | Upgrade plugin; re-Test Download Path; see [docker-download-path.md](docker-download-path.md) |
+| Queue: `Download Path not writable: …` | Bad Docker path or PUID/PGID | Use `/downloads/bandcamp`; fix volume permissions |
 | Import skipped | Path / permissions / quality | Check Download Path writable; Media Management |
 
 ---

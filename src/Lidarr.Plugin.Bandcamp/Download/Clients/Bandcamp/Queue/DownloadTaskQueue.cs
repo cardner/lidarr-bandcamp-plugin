@@ -131,27 +131,29 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
                 item.CompletedAt = DateTime.UtcNow;
                 item.Phase = "completed";
 
-                _logger.Debug("Bandcamp download queue: Download {0} completed successfully -> {1}",
+                _logger.Info("Bandcamp download queue: Download {0} completed successfully -> {1}",
                     item.DownloadId, item.OutputPath);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 item.Status = BandcampDownloadStatus.Failed;
-                item.ErrorMessage = "Download was cancelled";
+                item.ErrorMessage = BandcampPathGuard.FormatDownloadFailure("cancelled", "Download was cancelled");
                 item.CompletedAt = DateTime.UtcNow;
                 item.Phase = "cancelled";
 
-                _logger.Debug("Bandcamp download queue: Download {0} was cancelled", item.DownloadId);
+                _logger.Warn("Bandcamp download queue: Download {0} was cancelled", item.DownloadId);
             }
             catch (Exception ex)
             {
+                var phase = string.IsNullOrWhiteSpace(item.Phase) ? "failed" : item.Phase;
                 item.Status = BandcampDownloadStatus.Failed;
-                item.ErrorMessage = ex.Message;
+                // Always set a non-empty Message so Lidarr Queue / Failed download UI is not blank.
+                item.ErrorMessage = BandcampPathGuard.FormatDownloadFailure(phase, ex.Message);
                 item.CompletedAt = DateTime.UtcNow;
                 item.Phase = "failed";
 
-                _logger.Debug(ex, "Bandcamp download queue: Download {0} failed during phase '{1}'",
-                    item.DownloadId, item.Phase);
+                _logger.Error(ex, "Bandcamp download queue: Download {0} failed during phase '{1}': {2}",
+                    item.DownloadId, phase, item.ErrorMessage);
             }
         }
 

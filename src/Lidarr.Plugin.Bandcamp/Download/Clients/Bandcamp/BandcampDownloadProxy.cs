@@ -180,7 +180,18 @@ namespace NzbDrone.Core.Download.Clients.Bandcamp
             cancellationToken.ThrowIfCancellationRequested();
 
             // Ensure output directory exists and doesn't contain stale unreadable files from prior attempts.
-            PrepareOutputDirectory(item.OutputPath);
+            try
+            {
+                PrepareOutputDirectory(item.OutputPath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                throw new DownloadException(
+                    $"Download Path not writable: '{item.OutputPath}' ({ex.Message}). " +
+                    "In Docker (linuxserver/hotio) use a folder under the mounted volume, e.g. /downloads/bandcamp — " +
+                    "not /downloads/downloads unless that nested path exists on purpose.",
+                    ex);
+            }
 
             var tempFile = Path.Combine(item.OutputPath, $"{item.DownloadId}.tmp");
 
