@@ -92,11 +92,12 @@ Local helpers: `./scripts/build-plugin.sh`, `./scripts/run-lidarr-local.sh`, `do
 
 - Same **Identity Cookie**
 - Root folder + quality / metadata profiles as usual
-- **Monitor:** prefer **Specific Album** (only what you bought)
-- Enable **Search on Add** so Lidarr grabs via the Bandcamp indexer after MusicBrainz resolve
-- **Test**, then **Save**
+- **Enable Automatic Add** — on (required for sync to add anything)
+- **Monitor:** prefer **Specific Album** (UI may default Entire Artist — change it)
+- **Search for New Items** — **on** (Lidarr UI often leaves this off; without it, albums can be added but never searched/downloaded)
+- **Test**, then **Save**, then click **Refresh** once
 
-List sync is intentionally slow (≥ 6h). Bandcamp-only releases with no MusicBrainz match will not auto-add.
+List sync is intentionally slow (≥ 6h). Bandcamp-only releases / SkyHook-MusicBrainz failures will **not** auto-add — check Lidarr logs for `SkyHook` / `500` / “Unable to communicate”. Those titles need a manual Add Artist/Album (or retry when SkyHook is healthy). Indexer **Enable RSS** only grabs for albums **already** in Lidarr.
 
 ### 4. Delay profile (required)
 

@@ -9,6 +9,7 @@ using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Download.Clients.Bandcamp;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
+using NzbDrone.Core.ThingiProvider;
 
 namespace NzbDrone.Core.ImportLists.Bandcamp
 {
@@ -25,6 +26,33 @@ namespace NzbDrone.Core.ImportLists.Bandcamp
         public override ImportListType ListType => ImportListType.Other;
 
         public override TimeSpan MinRefreshInterval => TimeSpan.FromHours(6);
+
+        public override ProviderMessage Message => new ProviderMessage(
+            "Adds purchased Bandcamp albums into Lidarr via MusicBrainz. " +
+            "Turn on Enable Automatic Add and Search for New Items (Search on Add). " +
+            "Prefer Monitor → Specific Album. SkyHook/MusicBrainz failures skip that album (no add). " +
+            "Indexer Enable RSS only grabs for albums already in your library — it does not add new artists.",
+            ProviderMessageType.Info);
+
+        /// <summary>
+        /// Schema defaults for new lists. Lidarr UI forces Enable Automatic Add on and Monitor to
+        /// Entire Artist when picking a list type; it does not set Search — we default Search on.
+        /// </summary>
+        public override IEnumerable<ProviderDefinition> DefaultDefinitions
+        {
+            get
+            {
+                yield return new ImportListDefinition
+                {
+                    EnableAutomaticAdd = true,
+                    ShouldSearch = true,
+                    ShouldMonitor = ImportListMonitorType.SpecificAlbum,
+                    ShouldMonitorExisting = true,
+                    Implementation = GetType().Name,
+                    Settings = new BandcampImportListSettings()
+                };
+            }
+        }
 
         public BandcampImportList(BandcampApiClient apiClient,
                                   IImportListStatusService importListStatusService,

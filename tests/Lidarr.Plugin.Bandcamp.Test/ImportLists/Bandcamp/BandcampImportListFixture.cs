@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Net;
-using System.Threading.Tasks;
 using Moq;
 using NLog;
 using NzbDrone.Common.Http;
@@ -50,6 +49,27 @@ namespace Lidarr.Plugin.Bandcamp.Test.ImportLists.Bandcamp
         {
             Assert.True(_subject.MinRefreshInterval >= TimeSpan.FromHours(6));
             Assert.Equal(ImportListType.Other, _subject.ListType);
+        }
+
+        [Fact]
+        public void DefaultDefinitions_EnableSearchAndSpecificAlbumMonitor()
+        {
+            var definition = Assert.Single(_subject.DefaultDefinitions.OfType<ImportListDefinition>());
+
+            Assert.True(definition.EnableAutomaticAdd);
+            Assert.True(definition.ShouldSearch);
+            Assert.Equal(ImportListMonitorType.SpecificAlbum, definition.ShouldMonitor);
+            Assert.True(definition.ShouldMonitorExisting);
+            Assert.Equal(nameof(BandcampImportList), definition.Implementation);
+        }
+
+        [Fact]
+        public void Message_WarnsAboutMusicBrainzAndSearchOnAdd()
+        {
+            Assert.NotNull(_subject.Message);
+            Assert.Contains("MusicBrainz", _subject.Message.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Search", _subject.Message.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("RSS", _subject.Message.Message, StringComparison.OrdinalIgnoreCase);
         }
 
         [Fact]
