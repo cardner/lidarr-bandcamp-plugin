@@ -16,7 +16,10 @@ dotnet build Lidarr.Plugin.Bandcamp.slnx -c Release -p:TreatWarningsAsErrors=fal
 dotnet test Lidarr.Plugin.Bandcamp.slnx -c Release --filter "FullyQualifiedName~Bandcamp" -p:TreatWarningsAsErrors=false
 ```
 
-Do not commit `ext/Lidarr` (gitignored).
+Or: `./scripts/build-plugin.sh` (DLL → `artifacts/plugin/`).  
+Release zip for GitHub: `./scripts/build-plugin.sh --zip --version 0.2.0` → `artifacts/Lidarr.Plugin.Bandcamp.net8.0.zip`.
+
+Tagged releases on the **GitHub** mirror are published by `.github/workflows/build.yml` (see `docs/github-mirror.md`). Do not commit `ext/Lidarr` (gitignored).
 
 ## PRs
 
